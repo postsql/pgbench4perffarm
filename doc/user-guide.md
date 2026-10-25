@@ -123,7 +123,7 @@ Instead of passing long multi-line CLI commands, every workload suite provides r
 
 ### 3.1 Key Capabilities
 1. **Relative Path Resolution**: All script and dataset file paths inside a `.pgbench.json` file are automatically resolved relative to the directory containing the `.pgbench.json` file, so you can invoke `pgbench --config=...` from any working directory.
-2. **Multi-Stage Initialization (`-i`)**: When `-i` (`--initialize`) is combined with `--config=<file>`, `pgbench` executes the `init_steps` array defined in the JSON file in sequence (for example: `schema` $\rightarrow$ parallel `data` population $\rightarrow$ `constraints` $\rightarrow$ `ground_truth`).
+2. **Multi-Stage Initialization (`-i`)**: When `-i` (`--initialize`) is combined with `--config=<file>`, `pgbench` executes the `init_steps` array defined in the JSON file in sequence (for example: `schema` → parallel `data` population → `constraints` → `ground_truth`).
 3. **CLI Precedence**: Any flag passed on the command line (`-c`, `-j`, `-T`, `-t`, `-s`, `-D`, `--sla`, etc.) overrides the corresponding setting in `--config=<file>`, regardless of whether the CLI flag appears before or after `--config`.
 4. **Direct Replay of `--json-report` Files**: Every JSON file produced by `--json-report=<file>` embeds a top-level `"configuration"` object. Passing `--config=<report.json>` reloads the exact scripts, weights, client groups, reservoirs, scale factor, and SLA rules from that prior run.
 5. **Exporting Effective Config (`--dump-config`)**: Combine `--config` and CLI overrides with `--dump-config=<path>` (or `--dump-config=-` for `stdout`) to serialize the merged configuration as clean JSON and exit `0`.
@@ -214,10 +214,10 @@ pgbench -n -T 60 -s 2 -D scale=2 \
 ## 5. HDR Latency Histograms, SLAs (`--sla`) & JSON Reports (`--json-report`)
 
 ### 5.1 Base-2 Sub-Bucketed HDR Histograms
-Every thread, client group, and script maintains a zero-allocation, 3,968-bucket High-Dynamic-Range (HDR) latency histogram (`31` power-of-two octaves $\times$ `128` linear sub-buckets per octave) alongside a matching schedule-lag histogram.
-- Recording a transaction latency takes $O(1)$ CPU instructions via `pg_leftmost_one_pos64()`.
+Every thread, client group, and script maintains a zero-allocation, 3,968-bucket High-Dynamic-Range (HDR) latency histogram (`31` power-of-two octaves × `128` linear sub-buckets per octave) alongside a matching schedule-lag histogram.
+- Recording a transaction latency takes `O(1)` CPU instructions via `pg_leftmost_one_pos64()`.
 - Merging across threads (`mergeStats()`) is a simple array addition with zero lock contention.
-- Percentile queries (`p50`, `p90`, `p95`, `p99`, `p99.9`, or any arbitrary `p<X>`) achieve $\le 0.78\%$ relative error across a range from microseconds to hours.
+- Percentile queries (`p50`, `p90`, `p95`, `p99`, `p99.9`, or any arbitrary `p<X>`) achieve ≤ 0.78% relative error across a range from microseconds to hours.
 
 ### 5.2 Service Level Agreement Enforcement (`--sla`)
 Pass one or more `--sla` specifications on the command line (or in `.pgbench.json`) to turn `pgbench` into an automated CI/CD pass/fail gate:
@@ -280,7 +280,7 @@ Inside scripts, bind rows using `\dataset_bind <name> <wrap|once|partitioned|sam
 
 ### 6.2 Deterministic Trace Replay (`--replay`, `--replay-speed`, `--tcr`)
 Replay production or benchmark timestamp traces directly with `--replay=<trace.csv>` or pace script execution using `\wait_until :ts_us`:
-- `--replay-speed=<factor>`: Speeds up or slows down trace timestamps (`scaled_us = offset_us / replay_speed`; e.g., `2.0` runs $2\times$ faster than recorded wall-clock intervals, and `0.5` runs at half speed).
+- `--replay-speed=<factor>`: Speeds up or slows down trace timestamps (`scaled_us = offset_us / replay_speed`; e.g., `2.0` runs 2× faster than recorded wall-clock intervals, and `0.5` runs at half speed).
 - `--tcr=<factor>`: Alias for `--replay-speed=<factor>`.
 - `--ontime-threshold=<ms>`: Defines the maximum schedule lag (default `50.0` ms) counted as "on-time" in `ontime_pct` (`--sla="ontime_pct>=95%"`).
 

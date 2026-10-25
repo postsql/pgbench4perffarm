@@ -1,0 +1,183 @@
+# =============================================================================
+# pgbench4perffarm — Perffarm Animal Configuration (animal.conf)
+# =============================================================================
+# Copy this file to perffarm/conf/animal.conf and customize for your host:
+#   cp perffarm/conf/animal.conf.example perffarm/conf/animal.conf
+#
+# All paths and settings can also be overridden via environment variables or
+# CLI flags on setup_machine.sh, setup_metrics_db.sh, and run_perffarm.sh.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# 1. Animal Identity & Metadata
+# -----------------------------------------------------------------------------
+ANIMAL_NAME="${ANIMAL_NAME:-lynx-x86-nvme}"
+ANIMAL_OWNER="${ANIMAL_OWNER:-admin@example.org}"
+ANIMAL_ORG="${ANIMAL_ORG:-PostgreSQL Perffarm}"
+ANIMAL_LOCATION="${ANIMAL_LOCATION:-local-lab}"
+ANIMAL_DESCRIPTION="${ANIMAL_DESCRIPTION:-Dedicated PostgreSQL performance farm animal running pgbench4perffarm}"
+
+# -----------------------------------------------------------------------------
+# 2. Deployment Topology (Local vs. External / Cloud VMs)
+# -----------------------------------------------------------------------------
+# Supported topologies:
+#   "local"         : Both PostgreSQL server and pgbench client run on this machine.
+#   "remote-server" : PostgreSQL server runs on SERVER_SSH_TARGET; pgbench client runs locally.
+#   "remote-client" : PostgreSQL server runs locally; pgbench client runs on CLIENT_SSH_TARGET.
+#   "both-remote"   : PostgreSQL server runs on SERVER_SSH_TARGET and pgbench client runs on
+#                     CLIENT_SSH_TARGET (either separate VMs or the same external Cloud VM).
+TOPOLOGY="${TOPOLOGY:-local}"
+
+# Server instance network & SSH settings (used when TOPOLOGY="remote-server" or "both-remote")
+SERVER_HOST="${SERVER_HOST:-127.0.0.1}"
+SERVER_SSH_TARGET="${SERVER_SSH_TARGET:-}"          # e.g., "ubuntu@10.128.0.10"
+SERVER_SSH_OPTS="${SERVER_SSH_OPTS:--o BatchMode=yes -o StrictHostKeyChecking=accept-new}"
+SERVER_WORKDIR="${SERVER_WORKDIR:-/var/tmp/perffarm_server}"
+
+# Client instance network & SSH settings (used when TOPOLOGY="remote-client" or "both-remote")
+CLIENT_HOST="${CLIENT_HOST:-127.0.0.1}"
+CLIENT_SSH_TARGET="${CLIENT_SSH_TARGET:-}"          # e.g., "ubuntu@10.128.0.11"
+CLIENT_SSH_OPTS="${CLIENT_SSH_OPTS:--o BatchMode=yes -o StrictHostKeyChecking=accept-new}"
+CLIENT_WORKDIR="${CLIENT_WORKDIR:-/var/tmp/perffarm_client}"
+
+# Optional External / Cloud VM Provisioning & Teardown Hooks (provision_hosts.sh)
+# CLOUD_PROVIDER: "none" | "ssh" | "gcp" | "aws" | "custom"
+CLOUD_PROVIDER="${CLOUD_PROVIDER:-none}"
+AUTO_PROVISION="${AUTO_PROVISION:-false}"
+AUTO_TEARDOWN="${AUTO_TEARDOWN:-false}"
+
+# GCP optional settings (when CLOUD_PROVIDER="gcp")
+GCP_PROJECT="${GCP_PROJECT:-}"
+GCP_ZONE="${GCP_ZONE:-us-central1-a}"
+GCP_SERVER_INSTANCE="${GCP_SERVER_INSTANCE:-perffarm-pg-server}"
+GCP_CLIENT_INSTANCE="${GCP_CLIENT_INSTANCE:-perffarm-pg-client}"
+GCP_MACHINE_TYPE="${GCP_MACHINE_TYPE:-n2-standard-16}"
+GCP_IMAGE_FAMILY="${GCP_IMAGE_FAMILY:-debian-12}"
+GCP_IMAGE_PROJECT="${GCP_IMAGE_PROJECT:-debian-cloud}"
+GCP_BOOT_DISK_GB="${GCP_BOOT_DISK_GB:-100}"
+GCP_DATA_DISK_TYPE="${GCP_DATA_DISK_TYPE:-pd-ssd}"
+GCP_DATA_DISK_GB="${GCP_DATA_DISK_GB:-200}"
+GCP_WAL_DISK_TYPE="${GCP_WAL_DISK_TYPE:-pd-ssd}"
+GCP_WAL_DISK_GB="${GCP_WAL_DISK_GB:-100}"
+
+# AWS optional settings (when CLOUD_PROVIDER="aws")
+AWS_REGION="${AWS_REGION:-us-east-1}"
+AWS_INSTANCE_TYPE="${AWS_INSTANCE_TYPE:-c6i.4xlarge}"
+AWS_AMI_ID="${AWS_AMI_ID:-}"
+AWS_KEY_NAME="${AWS_KEY_NAME:-}"
+AWS_SECURITY_GROUP="${AWS_SECURITY_GROUP:-}"
+AWS_SUBNET_ID="${AWS_SUBNET_ID:-}"
+
+# Custom provisioning / teardown shell commands (when CLOUD_PROVIDER="custom")
+PROVISION_CMD="${PROVISION_CMD:-}"
+TEARDOWN_CMD="${TEARDOWN_CMD:-}"
+
+# -----------------------------------------------------------------------------
+# 3. Workspace & Storage Layout (Supports Separate System, Data & WAL Disks)
+# -----------------------------------------------------------------------------
+WORKDIR="${WORKDIR:-/var/tmp/pgbench4perffarm_work}"
+
+# Target server data and WAL directories (on SERVER_HOST).
+# Point PGDATA_DIR and PGWAL_DIR to dedicated NVMe/SSD mount points when available
+# so collect_instance_info.py records separate block device metrics for system (/),
+# data ($PGDATA_DIR), and WAL ($PGWAL_DIR) disks.
+PGDATA_DIR="${PGDATA_DIR:-$WORKDIR/pgdata}"
+PGWAL_DIR="${PGWAL_DIR:-$WORKDIR/pgwal}"
+
+# Controller artifact & state directories
+STATE_DIR="${STATE_DIR:-$WORKDIR/state}"
+RESULTS_DIR="${RESULTS_DIR:-$WORKDIR/results}"
+ARCHIVE_DIR="${ARCHIVE_DIR:-$WORKDIR/archives}"
+LOG_DIR="${LOG_DIR:-$WORKDIR/logs}"
+
+# -----------------------------------------------------------------------------
+# 4. PostgreSQL Server Build Configuration Flags & Options
+# -----------------------------------------------------------------------------
+PG_GIT_URL="${PG_GIT_URL:-https://github.com/postgres/postgres.git}"
+PG_LOCAL_REPO="${PG_LOCAL_REPO:-}"                  # Optional local git clone path for fast fetch
+PG_BRANCHES="${PG_BRANCHES:-master}"                # Space/comma-separated list of branches
+
+# Compiler & benchmark-grade release flags (NEVER enable --enable-cassert in perffarm runs)
+CC="${CC:-gcc}"
+CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}"
+CONFIGURE_FLAGS="${CONFIGURE_FLAGS:---without-icu}"
+AUTO_DETECT_LIBS="${AUTO_DETECT_LIBS:-true}"        # Auto-append --with-ssl=openssl, --with-lz4, --with-zstd, --with-libxml if headers exist
+BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}"
+
+# Optional pre-built PostgreSQL pg_config path (when set, skips git clone + server build)
+PREBUILT_PG_CONFIG="${PREBUILT_PG_CONFIG:-}"
+
+# Optional pgvector extension build support for pgbench-vec HNSW/IVFFlat tests
+BUILD_PGVECTOR="${BUILD_PGVECTOR:-false}"
+PGVECTOR_GIT_URL="${PGVECTOR_GIT_URL:-https://github.com/pgvector/pgvector.git}"
+
+# Upstream CI verification & regression suite policy before benchmarking
+# VERIFY_CI: "auto" (check GitHub API if remote commit; proceed if local/offline),
+#            "strict" (require green CI check-runs), or "off" (skip CI check)
+VERIFY_CI="${VERIFY_CI:-auto}"
+CI_FALLBACK_COMMITS="${CI_FALLBACK_COMMITS:-10}"
+
+# CHECK_WORLD_MODE: "full" (run make check-world + contrib/pgbench installcheck + tapcheck),
+#                   "fast" (run contrib/pgbench installcheck + pgbench tapcheck),
+#                   "skip" (skip regression checks)
+CHECK_WORLD_MODE="${CHECK_WORLD_MODE:-fast}"
+CHECK_WORLD_JOBS="${CHECK_WORLD_JOBS:-$BUILD_JOBS}"
+
+# -----------------------------------------------------------------------------
+# 5. Server Runtime Configuration Flags & Options
+# -----------------------------------------------------------------------------
+PGPORT="${PGPORT:-55432}"
+PGUSER="${PGUSER:-$(id -un)}"
+
+# Hardware sizing preset for generate_pgconf.py:
+#   "auto" (size from hardware_profile.json), "small-dev", "medium-vm", "large-baremetal"
+PG_SIZING_PRESET="${PG_SIZING_PRESET:-auto}"
+PG_MAX_CONNECTIONS="${PG_MAX_CONNECTIONS:-200}"
+PG_CONF_FILE="${PG_CONF_FILE:-$STATE_DIR/postgresql.animal.conf}"
+PG_EXTRA_GUCS="${PG_EXTRA_GUCS:-}"                  # Optional semicolon-separated key=val overrides
+
+# -----------------------------------------------------------------------------
+# 6. Metrics Database Configuration
+# -----------------------------------------------------------------------------
+# METRICS_DB_MODE:
+#   "local"    : setup_metrics_db.sh provisions & manages a dedicated local PostgreSQL cluster.
+#   "external" : Connect to an existing PostgreSQL database via METRICS_DB_CONNINFO.
+METRICS_DB_MODE="${METRICS_DB_MODE:-local}"
+METRICS_DB_HOST="${METRICS_DB_HOST:-127.0.0.1}"
+METRICS_DB_PORT="${METRICS_DB_PORT:-55433}"
+METRICS_DB_NAME="${METRICS_DB_NAME:-perffarm_metrics}"
+METRICS_DB_DATADIR="${METRICS_DB_DATADIR:-$WORKDIR/metrics_pgdata}"
+METRICS_DB_SCHEMA="${METRICS_DB_SCHEMA:-public}"
+METRICS_DB_CONNINFO="${METRICS_DB_CONNINFO:-host=$METRICS_DB_HOST port=$METRICS_DB_PORT dbname=$METRICS_DB_NAME}"
+
+# -----------------------------------------------------------------------------
+# 7. Test Set, Baseline Calibration, Telemetry & Upload Granularity
+# -----------------------------------------------------------------------------
+TEST_MATRIX_FILE="${TEST_MATRIX_FILE:-}"            # Defaults to perffarm/conf/test_matrix.json
+TEST_PROFILE="${TEST_PROFILE:-standard}"            # "smoke" | "standard" | "nightly"
+TEST_SUITE_FILTER="${TEST_SUITE_FILTER:-all}"       # "all" or comma-separated test/suite names
+REUSE_TEMPLATE_DB="${REUSE_TEMPLATE_DB:-true}"      # Cache & clone initialized DBs for multi-test suites
+
+# Baseline client-to-server latency & bandwidth calibration before benchmarks:
+# Measures timing & throughput of:
+#   1. SELECT 1;
+#   2. SELECT repeat('0123456789', 100000); (1 MB payload transfer)
+RUN_BASELINE_CALIBRATION="${RUN_BASELINE_CALIBRATION:-true}"
+CALIBRATION_SELECT1_ITERS="${CALIBRATION_SELECT1_ITERS:-200}"
+CALIBRATION_REPEAT1MB_ITERS="${CALIBRATION_REPEAT1MB_ITERS:-50}"
+
+# Telemetry & Upload Granularity:
+#   "summary"    : Tier A run summary, group/script/command breakdowns, Recall@K & SLA verdicts.
+#   "timeseries" : Tier A + Tier B 1-second progress (-P 1) and interval aggregates (-l --aggregate-interval=1).
+#   "full-trace" : Tier A + Tier B + Tier C per-transaction trace (-l --log-db-index).
+METRICS_LEVEL="${METRICS_LEVEL:-timeseries}"
+UPLOAD_LEVEL="${UPLOAD_LEVEL:-timeseries}"
+LOG_DB_MODE="${LOG_DB_MODE:-stream}"                # "stream" or "deferred"
+LOG_DB_UNLOGGED="${LOG_DB_UNLOGGED:-stream}"        # "stream", "all", or "off"
+
+# Upload destinations (comma-separated: "metrics_db", "archive", "remote_metrics_db", "rest", "scp")
+UPLOAD_TARGETS="${UPLOAD_TARGETS:-metrics_db,archive}"
+REMOTE_METRICS_DB_CONNINFO="${REMOTE_METRICS_DB_CONNINFO:-}"
+UPLOAD_REST_URL="${UPLOAD_REST_URL:-}"
+UPLOAD_REST_TOKEN="${UPLOAD_REST_TOKEN:-}"
+UPLOAD_SCP_TARGET="${UPLOAD_SCP_TARGET:-}"

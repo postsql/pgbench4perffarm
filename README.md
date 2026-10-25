@@ -21,6 +21,7 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
   - `workloads/pgbench-graph/` — Graph & social network analytics (`pgbench-graph`: `lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`)
   - `workloads/pgbench-vec/` — Multi-modal vector similarity search (`pgbench-vec`: `vec_hybrid.pgbench.json`, `vec_aging.pgbench.json`)
 - `viewer/` (`src/bin/pgbench/viewer/`) — Standalone zero-dependency Python (`bottle.py`) + WebAssembly (`pgbench_chart.wasm`) web telemetry viewer (`pgbench_viewer.py`).
+- `perffarm/` — Self-contained PostgreSQL Performance Farm ("perffarm") animal setup, hardware/disk discovery (`collect_instance_info.py`), client-server baseline `SELECT 1` & 1 MB throughput calibration (`calibrate_baseline.py`), Metrics DB schema (`sql/metrics_db_schema.sql`), and continuous benchmark runner (`run_perffarm.sh`) supporting local or remote/Cloud VM server and client topologies ([`perffarm/README.md`](perffarm/README.md)).
 - `doc/` — Comprehensive Markdown user guides ([`doc/README.md`](doc/README.md)) and DocBook SGML reference documentation (`doc/src/sgml/ref/pgbench.sgml` and `doc/src/sgml/pgbench-ext.sgml`).
 
 ## User Guides & Documentation (`doc/`)
@@ -32,6 +33,7 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
 - **[Graph Database Workloads Guide](doc/graph-workloads.md)** (`doc/graph-workloads.md`) — LDBC-inspired social and financial graph benchmark suites (`LSQB`, `SNB Interactive v1/v2`, `SNB BI`, `FinBench`, and `Graphalytics`) across `SQL`, `SQL_UD` (`UNION DISTINCT ON`), and ISO `SQL/PGQ` (`GRAPH_TABLE`).
 - **[Vector Similarity Search & Index Aging Guide](doc/vector-workloads.md)** (`doc/vector-workloads.md`) — VecBench-inspired vector ANN and hybrid RAG suite (`pgbench-vec` Modes 1–6), exact ground-truth generation, named `Recall@K` SLAs, 10-bucket tail distributions, and `Q1`-vs-`Q4` index aging degradation.
 - **[Benchmark Scripting Language, Expressions & `contrib/pgbench` Guide](doc/benchmark-language-guide.md)** (`doc/benchmark-language-guide.md`) — Complete reference for the `PgBenchValue` runtime type system, all 39 backslash meta-commands, all 61 client-side expression functions, and all 51 `contrib/pgbench` server-side SQL functions.
+- **[Perffarm Animal Setup & Continuous Benchmarking Guide](doc/perffarm-guide.md)** (`doc/perffarm-guide.md` & [`perffarm/README.md`](perffarm/README.md)) — Setting up a local or Cloud VM Perffarm animal (`setup_machine.sh`, `generate_pgconf.py`, `setup_metrics_db.sh`), recording per-instance CPU/RAM and separate system/data/WAL disk telemetry, calibrating client-server `SELECT 1` and 1 MB payload throughput, and running automated regression batches (`run_perffarm.sh`).
 
 ## Building and Installing
 

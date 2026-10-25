@@ -19,7 +19,7 @@ All six relational suites generate 100% of their synthetic data **inside Postgre
 
 ### 1.1 Single-Command Initialization via `--config=<file> -i` (Recommended)
 
-Every suite directory contains a declarative `.pgbench.json` file that defines the three initialization stages (`schema` $\rightarrow$ parallel `data` $\rightarrow$ `constraints`). Run all three stages in a single command from any directory:
+Every suite directory contains a declarative `.pgbench.json` file that defines the three initialization stages (`schema` → parallel `data` → `constraints`). Run all three stages in a single command from any directory:
 
 ```bash
 createdb bench_c
@@ -59,7 +59,7 @@ pgbench -n -t 1 -f workloads/pgbench-c/pgbench_c_constraints.sql bench_c
 Modeled after classic banking OLTP transactions (and `pgbench`'s built-in `tpcb-like` workload), `pgbench-b` encapsulates the multi-statement debit/credit transaction inside server-side SQL/PLpgSQL stored procedures (`CALL pgbench_b_transaction(...)` and `CALL pgbench_b_simple_update(...)`). This eliminates 7 client-server network round-trips per transaction and stresses PostgreSQL's stored procedure execution and row-level locking engine.
 
 ### Schema & Scripts
-- **Tables (4)**: `pgbench_branches`, `pgbench_tellers`, `pgbench_accounts` (`100,000` rows $\times$ `scale`), `pgbench_history`.
+- **Tables (4)**: `pgbench_branches`, `pgbench_tellers`, `pgbench_accounts` (`100,000` rows × `scale`), `pgbench_history`.
 - **Procedures (2)**: `pgbench_b_transaction(aid, tid, bid, delta)`, `pgbench_b_simple_update(aid, tid, bid, delta)`.
 - **Workload Scripts**:
   - `pgbench_b_tx.sql`: Full banking transaction via `CALL pgbench_b_transaction(...)`.

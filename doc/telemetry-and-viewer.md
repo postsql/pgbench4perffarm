@@ -139,8 +139,8 @@ SELECT * FROM pgbench_compare_runs(1, 2);
 ```
 
 Returns `(scope text, metric text, unit text, base_val float8, cand_val float8, abs_delta float8, pct_change float8, verdict text)` where `verdict` automatically classifies changes (`> 1%` threshold) using metric polarity awareness (`'IMPROVED'`, `'REGRESSED'`, `'UNCHANGED'`, or `'N/A'`):
-- Higher-is-better metrics (`tps`, `ontime_pct`, `recall_avg`, `recall_p5`, `recall_p50`, `recall_p95`, `validation_pct`, `initial_q1`, `mature_q4`): positive delta (`> +1%`) $\rightarrow$ `IMPROVED`, negative delta (`< -1%`) $\rightarrow$ `REGRESSED`.
-- Lower-is-better metrics (`latency_avg_ms`, `latency_p50_ms`..`latency_p99_9_ms`, `lag_avg_ms`, `lag_p95_ms`, `lag_p99_ms`, `transactions_failed`, `recall_deg_pct`, `degradation_pct`): negative delta (`< -1%`) $\rightarrow$ `IMPROVED`, positive delta (`> +1%`) $\rightarrow$ `REGRESSED`.
+- Higher-is-better metrics (`tps`, `ontime_pct`, `recall_avg`, `recall_p5`, `recall_p50`, `recall_p95`, `validation_pct`, `initial_q1`, `mature_q4`): positive delta (`> +1%`) → `IMPROVED`, negative delta (`< -1%`) → `REGRESSED`.
+- Lower-is-better metrics (`latency_avg_ms`, `latency_p50_ms`..`latency_p99_9_ms`, `lag_avg_ms`, `lag_p95_ms`, `lag_p99_ms`, `transactions_failed`, `recall_deg_pct`, `degradation_pct`): negative delta (`< -1%`) → `IMPROVED`, positive delta (`> +1%`) → `REGRESSED`.
 
 ### 3.3 Multi-Run N-Way Matrix Comparison (`pgbench_compare_runs(bigint[])`)
 

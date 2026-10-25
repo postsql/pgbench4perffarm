@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule periodic pgbench4perffarm benchmark batches
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+RandomizedDelaySec=300
+Persistent=true
+Unit=pgbench-perffarm@%i.service
+
+[Install]
+WantedBy=timers.target

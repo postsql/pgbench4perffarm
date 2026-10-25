@@ -15,7 +15,7 @@ extension:
 client:
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" all
 
-install:
+install: all
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" install
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" install
 

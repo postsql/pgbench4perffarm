@@ -120,7 +120,7 @@ All three sleep commands are executed non-blockingly by `poller.c` and accept ar
 | **`\dataset_bind`** | `\dataset_bind <name> <wrap\|once\|partitioned\|sample\|AT <expr>> <var1> [<var2> ...]` | Binds columns from a memory-mapped `--dataset` or `--vector-dataset` into `:<var1>`, `:<var2>`, ... (`wrap`/`next`, `once`, `partitioned`, `sample`/`random`, or `AT <row_idx>`). |
 | **`\copy_dataset`** | `\copy_dataset <name> <table> [(col1,...)]` | Streams memory-mapped dataset `<name>` into `<table>` via `COPY ... FROM STDIN`. |
 | **`\validate_result`** | `\validate_result <actual_expr> <expected_expr> [tol=<tol_expr>]` | Asserts that `<actual_expr>` equals `<expected_expr>` (within optional floating-point `<tol_expr>`), sets `:last_validation_ok`, and increments `validation_passed` or `validation_failed`. |
-| **`\record_recall`** | `\record_recall [[name=]<metric>] <retrieved_var> <truth_var> [<k_expr>]` | Computes top-$K$ set-intersection recall between `PGBT_ARRAY` variables `:<retrieved_var>` and `:<truth_var>`, sets `:last_recall`, and updates global + named recall histograms and Q1/Q4 aging ring buffers. |
+| **`\record_recall`** | `\record_recall [[name=]<metric>] <retrieved_var> <truth_var> [<k_expr>]` | Computes top-`K` set-intersection recall between `PGBT_ARRAY` variables `:<retrieved_var>` and `:<truth_var>`, sets `:last_recall`, and updates global + named recall histograms and Q1/Q4 aging ring buffers. |
 | **Pipelining** | `\startpipeline` / `\syncpipeline` / `\endpipeline` | Starts, flushes, or ends a libpq extended-query pipeline block. |
 
 ---
@@ -134,7 +134,7 @@ These functions execute directly inside the `pgbench` client process (in `\set`,
 - `least(x1, x2, ...)` / `greatest(x1, x2, ...)`: Minimum or maximum across variadic arguments.
 - `int(x)` / `double(x)`: Casts `x` to 64-bit integer (`PGBT_INT`) or double (`PGBT_DOUBLE`).
 - `sqrt(x)`, `ln(x)`, `exp(x)`, `pow(x, y)` / `power(x, y)`, `mod(x, y)`: Standard mathematical operations.
-- `pi()`: Returns $\pi$ (`3.14159265358979323846`).
+- `pi()`: Returns π (`3.14159265358979323846`).
 - `debug(x)`: Prints the value of `x` to `stderr` and returns `x`.
 
 ### 3.2 Random Distributions, Hashing & Permutations (8)
@@ -161,11 +161,11 @@ These functions execute directly inside the `pgbench` client process (in `\set`,
 - `array(e1, e2, ...)`: Constructs a 1D `PGBT_ARRAY`.
 - `array_generate(len, min [, max])`: Generates a 1D `PGBT_ARRAY` of length `len` filled with constant `min` or random integers in `[min, max]`.
 - `vector(f1, f2, ...)`: Constructs a dense `PGBT_VECTOR`.
-- `vector_dims(v)` / `vector_norm(v)`: Returns dimension count or Euclidean $L_2$ norm of vector `v`.
+- `vector_dims(v)` / `vector_norm(v)`: Returns dimension count or Euclidean L2 norm of vector `v`.
 - `vector_distance(v1, v2 [, metric])`: Computes `'l2'`, `'cosine'`, or `'ip'` (inner product) distance between two vectors on the client.
 - `random_vector(dim [, min, max, do_norm])`: Uniform random vector of dimension `dim`.
 - `random_vector_gaussian(dim [, sigma, do_norm])`: Gaussian random vector.
-- `random_unit_vector(dim [, sigma, do_norm])`: Unit-normalized random vector on the $(dim-1)$-sphere.
+- `random_unit_vector(dim [, sigma, do_norm])`: Unit-normalized random vector on the `(dim - 1)`-sphere.
 - `clustered_vector(dim, num_clusters [, sigma, seed, cluster_id])`: Gaussian cluster vector around deterministic centroid `cluster_id`.
 - `planted_vector(dim, target_id [, delta, seed])`: Query vector planted at perturbation `delta` from `target_id`.
 - `random_sparse_vector(dim, nnz [, min, max])`: Sparse vector literal (`'{i:v,...}/dim'`).

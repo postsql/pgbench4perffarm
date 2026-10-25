@@ -23,17 +23,17 @@ Unlike traditional database benchmarks that only measure throughput (TPS) and la
 - **Single-Column Ranking Capture (`\gset_col`)**:
   - `SELECT id FROM ... ORDER BY ... LIMIT 10 \gset_col retrieved` binds all returned `id` rows directly into a 1D `PGBT_ARRAY` variable `:retrieved` in a single step.
 - **Named `Recall@K` Telemetry & Sliding Ring Buffers (`\record_recall`)**:
-  - `\record_recall name=r_unfiltered retrieved truth 10` computes $|\text{retrieved}_{1..K} \cap \text{truth}_{1..K}| / \min(K, |\text{truth}|)$, updates a 10-bucket tail distribution (`[0.0-0.1)` .. `[0.9-1.0]`), and feeds a 32-sample sliding ring buffer that compares initial (`Q1`) recall against mature (`Q4`) recall after continuous writes.
+  - `\record_recall name=r_unfiltered retrieved truth 10` computes `|retrieved[1..K] ∩ truth[1..K]| / min(K, |truth|)`, updates a 10-bucket tail distribution (`[0.0-0.1)` .. `[0.9-1.0]`), and feeds a 32-sample sliding ring buffer that compares initial (`Q1`) recall against mature (`Q4`) recall after continuous writes.
 
 ---
 
 ## 2. The 4-Stage Initialization Pipeline (Including Ground Truth)
 
-Unlike relational suites that use 3 initialization stages, **`pgbench-vec` requires 4 initialization stages** because exact top-$K$ ground-truth neighbor lists must be precomputed into `pgbench_vec_ground_truth` after the vector table is populated.
+Unlike relational suites that use 3 initialization stages, **`pgbench-vec` requires 4 initialization stages** because exact top-`K` ground-truth neighbor lists must be precomputed into `pgbench_vec_ground_truth` after the vector table is populated.
 
 ### 2.1 Single-Command Initialization via `.pgbench.json` (Recommended)
 
-Both `vec_hybrid.pgbench.json` and `vec_aging.pgbench.json` include all 4 stages (`schema` $\rightarrow$ `data` $\rightarrow$ `constraints` $\rightarrow$ `ground_truth`) in their `init_steps` array:
+Both `vec_hybrid.pgbench.json` and `vec_aging.pgbench.json` include all 4 stages (`schema` → `data` → `constraints` → `ground_truth`) in their `init_steps` array:
 
 ```bash
 createdb bench_vec
@@ -76,7 +76,7 @@ pgbench -n -t 1 -f workloads/pgbench-vec/pgbench_vec_gt_gen.sql bench_vec
 | :---: | :--- | :---: | :---: | :---: | :--- |
 | **Mode 1** | `pgbench_vec_search.sql` | **30%** | `r_unfiltered` | `recall>=0.95` | **Unfiltered Top-K Search**: Pure ANN similarity search (`ORDER BY distance LIMIT 10`) compared against exact `gt_unfiltered`. |
 | **Mode 2** | `pgbench_vec_filtered.sql` | **25%** | `r_prefilter` | `recall>=0.90` | **Pre-Filtered Hybrid Search**: Combines scalar category predicate (`category_id = :q_cat`), JSONB/tag filter, and vector ordering against `gt_filtered`. |
-| **Mode 3** | `pgbench_vec_postfiltered.sql` | **20%** | `r_postfilter` | `recall>=0.40` | **Post-Filtered Oversampling Search**: Fetches a $4\times$ oversampled ANN candidate pool (`LIMIT 40`) in a subquery and applies scalar filtering (`WHERE category_id = :q_cat LIMIT 10`) in the outer query. |
+| **Mode 3** | `pgbench_vec_postfiltered.sql` | **20%** | `r_postfilter` | `recall>=0.40` | **Post-Filtered Oversampling Search**: Fetches a 4× oversampled ANN candidate pool (`LIMIT 40`) in a subquery and applies scalar filtering (`WHERE category_id = :q_cat LIMIT 10`) in the outer query. |
 | **Mode 4** | `pgbench_vec_insert.sql` | **10%** | *(write stream)* | `p95<=5000ms` | **Streaming Vector Ingestion**: Generates new clustered embeddings, upserts into `pgbench_vec_items`, pushes new IDs into `--reservoir=vec_ids:1024`, and advances causal watermarks (`\advance_watermark`). |
 | **Mode 5** | `pgbench_vec_multivec.sql` | **15%** | `r_multivec` | `recall>=0.85` | **Multi-Vector Score Fusion**: Late-interaction weighted distance fusion (`0.7 * text_dist + 0.3 * image_dist`) across `embedding` and `image_embedding` columns compared against `gt_multivec`. |
 | **Mode 6** | `pgbench_vec_aging.sql` | **100%** *(in `vec_aging`)* | `r_aging` | `recall>=0.80` | **Continuous Ingestion, Drift, Churn & Aging**: Interleaves streaming vector upserts, embedding perturbation (drift), delete/re-insert churn, live ground-truth refresh, and `Recall@10` probes (`r_aging`). |
@@ -132,10 +132,10 @@ In both stdout summary output, `--json-report`, and `--log-db` (`pgbench_runs` /
 2. **10-Bucket Recall Distribution Histogram**:
    Counts how many queries fell into each decile (`0.0-0.1`, `0.1-0.2`, ..., `0.8-0.9`, `0.9-1.0`) so you can spot heavy-tail recall collapse that a simple mean hides.
 3. **Q1 vs. Q4 Aging Degradation (`aging_degradation`)**:
-   - `initial_recall` ($Q_1$): Mean recall across the earliest quartile of recorded samples in the run.
-   - `mature_recall` ($Q_4$): Mean recall across the final quartile of recorded samples in the sliding ring buffer.
-   - `delta`: $\text{mature\_recall} - \text{initial\_recall}$.
-   - `degradation_pct`: $\max\!\left(0, \frac{\text{initial\_recall} - \text{mature\_recall}}{\text{initial\_recall}} \times 100\right)$.
+   - `initial_recall` (`Q1`): Mean recall across the earliest quartile of recorded samples in the run.
+   - `mature_recall` (`Q4`): Mean recall across the final quartile of recorded samples in the sliding ring buffer.
+   - `delta`: `mature_recall - initial_recall`.
+   - `degradation_pct`: `max(0, ((initial_recall - mature_recall) / initial_recall) * 100)`.
 
 Example `--json-report` excerpt from a `pgbench-vec` run:
 

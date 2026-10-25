@@ -188,7 +188,7 @@ Executes five classical graph algorithms directly in SQL (or `SQL_UD` / `SQL/PGQ
 2. **Weakly Connected Components (`WCC`)**: Propagates minimum vertex component labels (`min(comp_id)`) across the undirected social graph.
 3. **Single-Source Shortest Paths (`SSSP`)**: Computes minimum cumulative edge weight (`sum(weight)`) paths from a source vertex (in `SQL_UD` mode, uses `UNION DISTINCT ON (dst_id ORDER BY dist ASC)` to prune suboptimal paths in-place inside `RecursiveUnion`).
 4. **PageRank (`PR`)**: Iterative damping-factor (`0.85` / `0.15`) rank propagation across vertex out-degrees.
-5. **Local Clustering Coefficient (`LCC`)**: Counts closed triangles among each vertex's 1-hop neighbors divided by $d_i (d_i - 1)$.
+5. **Local Clustering Coefficient (`LCC`)**: Counts closed triangles among each vertex's 1-hop neighbors divided by `d_i * (d_i - 1)` (where `d_i` is the degree of vertex `i`).
 
 ```bash
 # Compare standard SQL vs. UNION DISTINCT ON (SQL_UD) vs. SQL/PGQ on Graphalytics:

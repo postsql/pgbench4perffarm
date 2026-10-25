@@ -1,0 +1,19 @@
+[Unit]
+Description=pgbench4perffarm Continuous Performance Farm Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=%i
+WorkingDirectory=/home/%i/pgbench4perffarm/perffarm
+ExecStart=/home/%i/pgbench4perffarm/perffarm/run_perffarm.sh --config=/home/%i/pgbench4perffarm/perffarm/conf/animal.conf
+TimeoutStartSec=14400
+StandardOutput=journal
+StandardError=journal
+Nice=-5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+
+[Install]
+WantedBy=multi-user.target

@@ -26,6 +26,7 @@ uninstall:
 clean:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" clean
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" clean
+	rm -rf contrib/pgbench/.deps src/bin/pgbench/.deps
 
 distclean: clean
 

@@ -15,6 +15,7 @@ contrib/pgbench/regression.diffs
 contrib/pgbench/regression.out
 contrib/pgbench/tmp_check/
 perffarm/conf/animal.conf
+.deps/
 __pycache__/
 *.pyc
 

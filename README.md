@@ -12,14 +12,14 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
 - `contrib/pgbench/` — Server-side C extension (`CREATE EXTENSION pgbench;`) exposing fast C implementations of uniform/gaussian/exponential/zipfian/poisson random distributions, FNV-1a and Murmur2 hashing, domain permutations (`pgbench.permute`), NURand (`pgbench.nurand`), syllable/string/bytea generators, date arithmetic, multi-modal dense/sparse vector generators and distance metrics, and R-MAT / LDBC correlated graph edge generators in the `pgbench` schema.
 - `src/common/pgbench_funcs.c` & `src/include/common/pgbench_funcs.h` — Shared frontend/backend statistical and synthetic data generation library with compatibility shims for PostgreSQL 14 through 20devel.
 - `workloads/` (`src/bin/pgbench/workloads/`) — 8 ready-to-run workload suites:
-  - `workloads/pgbench-b/` — Simple update-intensive OLTP (`pgbench-b`)
-  - `workloads/pgbench-c/` — 9-table wholesale supplier OLTP (`pgbench-c`: SQL, SQL_UD, PL/pgSQL)
-  - `workloads/pgbench-e/` — 33-table financial brokerage OLTP (`pgbench-e`)
-  - `workloads/pgbench-h/` — 8-table decision support analytics (`pgbench-h`: power & throughput)
-  - `workloads/pgbench-ds/` — 24-table retail/web/catalog decision support (`pgbench-ds`)
-  - `workloads/pgbench-htap/` — Hybrid transactional/analytical processing (`pgbench-htap`)
-  - `workloads/pgbench-graph/` — Social network graph (`pgbench-graph`: SQL, SQL_UD, PGQ, plPGQ)
-  - `workloads/pgbench-vec/` — Vector similarity search (`pgbench-vec`: hybrid search & index aging)
+  - `workloads/pgbench-b/` — 4-table simple update-intensive OLTP (`pgbench-b`: `pgbench_b.pgbench.json`)
+  - `workloads/pgbench-c/` — 9-table wholesale supplier OLTP (`pgbench-c`: `pgbench_c.pgbench.json`)
+  - `workloads/pgbench-e/` — 16-table financial brokerage OLTP (`pgbench-e`: `pgbench_e.pgbench.json`)
+  - `workloads/pgbench-h/` — 8-table decision support analytics (`pgbench-h`: `pgbench_h.pgbench.json`)
+  - `workloads/pgbench-ds/` — 24-table retail/web/catalog decision support (`pgbench-ds`: `pgbench_ds.pgbench.json`)
+  - `workloads/pgbench-htap/` — Hybrid transactional/analytical processing (`pgbench-htap`: `pgbench_htap.pgbench.json`)
+  - `workloads/pgbench-graph/` — Graph & social network analytics (`pgbench-graph`: `lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`)
+  - `workloads/pgbench-vec/` — Multi-modal vector similarity search (`pgbench-vec`: `vec_hybrid.pgbench.json`, `vec_aging.pgbench.json`)
 - `viewer/` (`src/bin/pgbench/viewer/`) — Standalone zero-dependency Python (`bottle.py`) + WebAssembly (`pgbench_chart.wasm`) web telemetry viewer (`pgbench_viewer.py`).
 - `doc/src/sgml/` — SGML reference documentation (`ref/pgbench.sgml` and `pgbench-ext.sgml`).
 
@@ -38,14 +38,20 @@ To run the `contrib/pgbench` SQL regression test suite against a running Postgre
 make installcheck PG_CONFIG=/path/to/pg_config
 ```
 
+To run the `src/bin/pgbench` Perl TAP test suite (`t/001_pgbench_with_server.pl` and `t/002_pgbench_no_server.pl`):
+
+```bash
+make tapcheck PG_CONFIG=/path/to/pg_config
+```
+
 ## Quick Start (`-s 10 -c 10 -T 10`)
 
 ```bash
-# 1. Initialize a workload suite at scale factor 10
-pgbench -i -s 10 -D scale=10 --config=workloads/pgbench-c/config.json <dbname>
+# 1. Initialize a workload suite at scale factor 10 (run from src/bin/pgbench/ or $(pg_config --sharedir)/pgbench/)
+pgbench -i -s 10 --config=workloads/pgbench-c/pgbench_c.pgbench.json <dbname>
 
 # 2. Run a 10-second benchmark at concurrency 10
-pgbench --config=workloads/pgbench-c/config.json -s 10 -D scale=10 -c 10 -j 4 -T 10 <dbname>
+pgbench --config=workloads/pgbench-c/pgbench_c.pgbench.json -s 10 -c 10 -j 2 -T 10 <dbname>
 ```
 
 ## License

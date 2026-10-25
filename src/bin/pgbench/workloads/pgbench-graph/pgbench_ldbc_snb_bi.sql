@@ -149,23 +149,18 @@ SELECT count(*) AS bi11_triangles
 
 -- BI-19: Interaction-Weighted Shortest Path Between Two Cities
 WITH RECURSIVE city_paths AS (
-    SELECT p.id AS start_id,
-           p.id AS curr_id,
+    SELECT p.id AS curr_id,
            0.0::float8 AS total_weight,
-           0 AS hops,
-           ARRAY[p.id] AS visited
+           0 AS hops
       FROM pgbench_graph_persons p
      WHERE p.city_id = :city1_id
-    UNION ALL
-    SELECT cp.start_id,
-           k.dst_id AS curr_id,
-           cp.total_weight + k.weight,
-           cp.hops + 1,
-           cp.visited || k.dst_id
+    UNION
+    SELECT k.dst_id AS curr_id,
+           round((cp.total_weight + k.weight)::numeric, 2)::float8 AS total_weight,
+           cp.hops + 1 AS hops
       FROM city_paths cp
       JOIN pgbench_graph_knows k ON k.src_id = cp.curr_id
      WHERE cp.hops < 3
-       AND NOT (k.dst_id = ANY(cp.visited))
 )
 SELECT COALESCE(min(total_weight), 0.0) AS bi19_min_weight
   FROM city_paths cp

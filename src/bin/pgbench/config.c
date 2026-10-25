@@ -290,6 +290,10 @@ cjson_object_field_start(void *state, char *fname, bool isnull)
 		st->pending_key[st->depth - 1] = pg_strdup(fname ? fname : "");
 		st->pending_key_line[st->depth - 1] = st->lex->line_number;
 	}
+#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+	if (fname != NULL)
+		pfree(fname);
+#endif
 	CJSON_RETURN_OK();
 }
 
@@ -301,7 +305,13 @@ cjson_scalar(void *state, char *token, JsonTokenType tokentype)
 	int			line = st->lex->line_number;
 
 	if (st->too_deep)
+	{
+#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+		if (token != NULL)
+			pfree(token);
+#endif
 		CJSON_RETURN_OK();
+	}
 
 	switch (tokentype)
 	{
@@ -326,6 +336,11 @@ cjson_scalar(void *state, char *token, JsonTokenType tokentype)
 			node = allocJsonNode(CJSON_NULL, line);
 			break;
 	}
+
+#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+	if (token != NULL)
+		pfree(token);
+#endif
 
 	attachJsonChild(st, node);
 	CJSON_RETURN_OK();

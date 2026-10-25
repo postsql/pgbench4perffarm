@@ -31,10 +31,33 @@ PG_CPPFLAGS = -DFRONTEND -I. -I$(srcdir) -I$(srcdir)/../../include -I$(libpq_src
 PG_LIBS_INTERNAL = -L$(libdir) -lpgfeutils $(libpq_pgport)
 PG_LIBS = $(PTHREAD_LIBS) -lm
 EXTRA_CLEAN = exprparse.h exprparse.c exprscan.c pgbench_funcs.c tmp_check
+override with_llvm = no
 
 PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+
+ifneq ($(enable_tap_tests),yes)
+ifeq ($(PROVE),)
+PROVE := $(shell command -v prove 2>/dev/null)
+endif
+ifneq ($(PROVE),)
+ifneq ($(wildcard $(top_srcdir)/src/test/perl/PostgreSQL/Test/Cluster.pm),)
+define prove_installcheck
+echo "# +++ tap install-check in $(subdir) +++" && \
+rm -rf '$(CURDIR)'/tmp_check && \
+$(MKDIR_P) '$(CURDIR)'/tmp_check && \
+cd $(srcdir) && \
+   TESTLOGDIR='$(CURDIR)/tmp_check/log' \
+   TESTDATADIR='$(CURDIR)/tmp_check' \
+   PATH="$(bindir):$(CURDIR):$$PATH" \
+   PGPORT='6$(DEF_PGPORT)' \
+   PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' \
+   $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
+endef
+endif
+endif
+endif
 
 ifneq ($(PORTNAME), win32)
 override CFLAGS += $(PTHREAD_CFLAGS)
@@ -61,6 +84,11 @@ install-workloads: installdirs
 	$(MKDIR_P) '$(DESTDIR)$(datadir)/pgbench/workloads' '$(DESTDIR)$(datadir)/pgbench/viewer'
 	cp -R $(srcdir)/workloads/* '$(DESTDIR)$(datadir)/pgbench/workloads/'
 	cp -R $(srcdir)/viewer/* '$(DESTDIR)$(datadir)/pgbench/viewer/'
+
+uninstall: uninstall-workloads
+
+uninstall-workloads:
+	rm -rf '$(DESTDIR)$(datadir)/pgbench'
 
 else
 EXTRA_INSTALL = contrib/pgbench

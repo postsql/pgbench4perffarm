@@ -46,8 +46,24 @@ char *replay_trace_file = NULL;
 int	max_concurrent_sessions = 0;
 int	active_sessions_count = 0;
 static int	aborted_clients_count = 0;
+static volatile int script_stats_lock = 0;
 static char *resolved_hostaddr = NULL;
 static char *saved_password = NULL;
+
+static inline void
+lockScriptStats(void)
+{
+	while (__atomic_test_and_set(&script_stats_lock, __ATOMIC_ACQUIRE))
+	{
+		/* spin */
+	}
+}
+
+static inline void
+unlockScriptStats(void)
+{
+	__atomic_clear(&script_stats_lock, __ATOMIC_RELEASE);
+}
 
 int	nxacts = 0;			/* number of transactions per client */
 int	duration = 0;		/* duration in seconds */
@@ -1053,7 +1069,11 @@ finishCaughtError(TState *thread, CState *st)
 
 	thread->stats.expected_rollbacks++;
 	if (per_script_stats)
+	{
+		lockScriptStats();
 		sql_script[st->use_file].stats.expected_rollbacks++;
+		unlockScriptStats();
+	}
 
 	if (cmd->meta_varprefix != NULL)
 	{
@@ -1390,8 +1410,10 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					call_lat = (double) (now - frame->call_begin);
 					if (call_lat < 0.0)
 						call_lat = 0.0;
+					lockScriptStats();
 					accumStats(&sql_script[called_script].stats, false,
 							   call_lat, 0.0, ESTATUS_NO_ERROR, 1, false);
+					unlockScriptStats();
 
 					st->cstack = frame->cstack;
 					st->use_file = frame->script_idx;
@@ -1410,8 +1432,10 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					{
 						Command    *call_cmd = sql_script[st->use_file].commands[frame->return_cmd - 1];
 
+						lockScriptStats();
 						addToSimpleStats(&call_cmd->stats,
 										 PG_TIME_GET_DOUBLE(now - frame->call_begin));
+						unlockScriptStats();
 					}
 
 					st->state = conditional_active(st->cstack) ?
@@ -1814,9 +1838,10 @@ session_slot_acquired:
 				{
 					pg_time_now_lazy(&now);
 
-					/* XXX could use a mutex here, but we choose not to */
+					lockScriptStats();
 					addToSimpleStats(&command->stats,
 									 PG_TIME_GET_DOUBLE(now - st->stmt_begin));
+					unlockScriptStats();
 				}
 
 				/* Go ahead with next command, to be executed or skipped */
@@ -1983,7 +2008,7 @@ session_slot_acquired:
 
 				/* Count tries and retries */
 				st->tries++;
-				command->retries++;
+				(void) __atomic_fetch_add(&command->retries, 1, __ATOMIC_RELAXED);
 
 				/*
 				 * Reset the random state as they were at the beginning of the
@@ -2022,7 +2047,7 @@ session_slot_acquired:
 				command = sql_script[st->use_file].commands[st->command];
 
 				/* Accumulate the failure. */
-				command->failures++;
+				(void) __atomic_fetch_add(&command->failures, 1, __ATOMIC_RELAXED);
 
 				/*
 				 * Inform that the failed transaction will not be retried.
@@ -2376,9 +2401,9 @@ processXactStats(TState *thread, CState *st, pg_time_usec_t *now,
 	if (use_log)
 		doLog(thread, st, agg, tx_skipped, latency, lag);
 
-	/* XXX could use a mutex here, but we choose not to */
 	if (per_script_stats)
 	{
+		lockScriptStats();
 		accumStats(&sql_script[st->use_file].stats, tx_skipped, latency, lag,
 				   st->estatus, st->tries, has_schedule);
 		if (!tx_skipped && st->estatus == ESTATUS_NO_ERROR)
@@ -2413,6 +2438,7 @@ processXactStats(TState *thread, CState *st, pg_time_usec_t *now,
 				addToSimpleStats(&sql_script[st->use_file].stats.think_time,
 								 (double) st->txn_think_time);
 		}
+		unlockScriptStats();
 	}
 
 	st->txn_recall_count = 0;

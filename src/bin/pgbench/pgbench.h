@@ -75,7 +75,8 @@ option_parse_int(const char *optarg, const char *optname,
 
 	if (*endptr != '\0')
 	{
-		pg_log_error("invalid %s: \"%s\"", optname, optarg);
+		pg_log_error("invalid value \"%s\" for option %s",
+					 optarg, optname);
 		return false;
 	}
 

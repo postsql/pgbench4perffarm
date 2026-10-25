@@ -5,7 +5,7 @@
 
 PG_CONFIG ?= pg_config
 
-.PHONY: all extension client install uninstall clean distclean check installcheck
+.PHONY: all extension client install uninstall clean distclean check tapcheck installcheck
 
 all: extension client
 
@@ -31,3 +31,8 @@ distclean: clean
 
 installcheck:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" installcheck
+
+tapcheck:
+	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" installcheck
+
+check: tapcheck

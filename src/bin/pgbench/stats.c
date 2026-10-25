@@ -524,10 +524,11 @@ addToNamedRecallStats(StatsData *sd, const char *name, double recall_val)
 
 	if (slot == NULL && sd->num_named_recalls < MAX_NAMED_RECALL_METRICS)
 	{
-		slot = &sd->named_recalls[sd->num_named_recalls++];
+		slot = &sd->named_recalls[sd->num_named_recalls];
 		memset(slot, 0, sizeof(*slot));
 		strlcpy(slot->name, name, sizeof(slot->name));
 		initSimpleStats(&slot->stats);
+		sd->num_named_recalls++;
 	}
 
 	if (slot != NULL)

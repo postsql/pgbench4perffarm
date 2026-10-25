@@ -17,11 +17,13 @@
 
 \if :op_roll <= 50
     -- Streaming Vector Ingestion & Causal Watermark Advancement
-    \set new_id random(2000000, 9999999)
+    -- Bound the unindexed delta buffer to 7.5% of the base catalog (200*:scale + 1 .. 215*:scale)
+    -- with matching cluster dispersion (0.25) so steady-state recall stabilizes around ~0.88-0.92.
+    \set new_id random(200 * :scale + 1, 215 * :scale)
     \set cat random(0, 9)
     \set tag1 random(0, 4)
     \set tag2 random(0, 4)
-    \set v random_unit_vector(:dim)
+    \set v clustered_vector(:dim, 10, 0.25, 42, :cat)
 
     INSERT INTO pgbench_vec_items (id, category, price, is_active, tags, payload, metadata, embedding, image_embedding)
     VALUES (:new_id, :cat, 49.99, true, ARRAY[:tag1, :tag2], 'streaming-aging-item',
@@ -48,12 +50,13 @@
      WHERE id = :drift_id;
 
 \else
-    -- Catalog Churn & Soft Deletion
+    -- Catalog Churn & Soft Deletion (with steady-state reactivation)
     \set churn_id random(1, 200 * :scale)
+    \set revive_id random(1, 200 * :scale)
 
     UPDATE pgbench_vec_items
-       SET is_active = false
-     WHERE id = :churn_id;
+       SET is_active = CASE WHEN id = :churn_id THEN false ELSE true END
+     WHERE id IN (:churn_id, :revive_id);
 
 \endif
 

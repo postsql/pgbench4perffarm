@@ -44,6 +44,7 @@ my $node = PostgreSQL::Test::Cluster->new('main');
 # expected strings.
 $node->init(extra => [ '--locale', 'C' ]);
 $node->start;
+my $server_version_num = int($node->safe_psql('postgres', 'SHOW server_version_num;'));
 
 # tablespace for testing, because partitioned tables cannot use pg_default
 # explicitly and we want to test that table creation with tablespace works
@@ -319,7 +320,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 my $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 unlike(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ invalid ',],
+	qr[DETAIL:  [Pp]arameters: \$1 = '\{ invalid ',],
 	"no parameters logged");
 $log = undef;
 
@@ -360,7 +361,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 like(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que mirase bien lo que hacia\?'''],
+	qr[DETAIL:  [Pp]arameters: \$1 = '\{ invalid ', \$2 = '''Valame Dios!'' dijo Sancho; ''no le dije yo a vuestra merced que mirase bien lo que hacia\?'''],
 	"parameter report does not truncate");
 $log = undef;
 
@@ -405,7 +406,7 @@ select column1::jsonb from (values (:value), (:long)) as q;
 $log = PostgreSQL::Test::Utils::slurp_file($node->logfile);
 like(
 	$log,
-	qr[DETAIL:  Parameters: \$1 = '\{ inval\.\.\.', \$2 = '''Valame\.\.\.'],
+	qr[DETAIL:  [Pp]arameters: \$1 = '\{ inval\.\.\.', \$2 = '''Valame\.\.\.'],
 	"parameter report truncates");
 $log = undef;
 
@@ -1058,13 +1059,16 @@ SET LOCAL statement_timeout='1h';
 }
 	});
 
-# Try SET LOCAL as second pipeline command.  This succeeds and the second
-# command does not cause a WARNING to be generated.
+# Try SET LOCAL as second pipeline command.  In PostgreSQL 18+, the second
+# command runs inside the implicit transaction block of the pipeline without a
+# WARNING (commit d0eb4297cc5, reverted on PG 14-17).
 $node->pgbench(
 	'-t 1 -n -M extended',
 	0,
 	[],
-	[qr{^$}],
+	$server_version_num >= 180000
+	? [qr{^$}]
+	: [qr{WARNING:  SET LOCAL can only be used in transaction blocks}],
 	'SET LOCAL inside implicit transaction block of pipeline',
 	{
 		'001_pgbench_pipeline_set_local_2' => q{
@@ -1198,11 +1202,12 @@ SELECT 1;
 }
 	});
 
-# Try LOCK TABLE as second pipeline command.  This succeeds as LOCK is inside
-# an implicit transaction block.
+# Try LOCK TABLE as second pipeline command.  In PostgreSQL 18+, this succeeds
+# as LOCK is inside an implicit transaction block (commit d0eb4297cc5, reverted
+# on PG 14-17).
 $node->pgbench(
 	'-t 1 -n -M extended',
-	0,
+	$server_version_num >= 180000 ? 0 : 2,
 	[],
 	[],
 	'LOCK TABLE inside implicit transaction block of pipeline',

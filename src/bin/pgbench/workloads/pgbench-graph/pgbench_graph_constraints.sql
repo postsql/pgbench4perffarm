@@ -149,3 +149,9 @@ ANALYZE pgbench_fin_transfers;
 ANALYZE pgbench_fin_loans;
 ANALYZE pgbench_fin_mediums;
 ANALYZE pgbench_fin_sign_ins;
+
+SELECT setval('pgbench_graph_person_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_persons)), false);
+SELECT setval('pgbench_graph_forum_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_forums)), false);
+SELECT setval('pgbench_graph_msg_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_messages)), false);
+SELECT setval('pgbench_fin_transfer_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_fin_transfers)), false);
+SELECT setval('pgbench_fin_loan_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_fin_loans)), false);

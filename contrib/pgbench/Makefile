@@ -21,6 +21,12 @@ PG_CONFIG ?= pg_config
 PG_CPPFLAGS = -I$(srcdir)/../../src/include
 EXTRA_CLEAN = pgbench_funcs.c
 PGXS := $(shell $(PG_CONFIG) --pgxs)
+PG_CLANG := $(shell awk -F'= *' '/^CLANG *=/{print $$2}' "$(dir $(PGXS))../../src/Makefile.global" 2>/dev/null)
+ifneq ($(PG_CLANG),)
+ifeq ($(wildcard $(PG_CLANG)),)
+override with_llvm = no
+endif
+endif
 include $(PGXS)
 
 pgbench_funcs.c: $(srcdir)/../../src/common/pgbench_funcs.c

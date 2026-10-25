@@ -198,17 +198,35 @@ def parse_mounts() -> list[dict]:
     return mounts
 
 
-def resolve_parent_block_name(dev_path: str) -> str:
-    if not dev_path.startswith("/dev/"):
-        return ""
+def resolve_parent_block_name(dev_path: str, existing_path_str: str = "") -> tuple[str, str]:
+    resolved_dev = dev_path
+    # If /proc/mounts reports /dev/root (common on Ubuntu cloud kernels), resolve via st_dev in /sys/dev/block
+    if existing_path_str and (not dev_path.startswith("/dev/") or dev_path == "/dev/root" or not os.path.exists(dev_path)):
+        try:
+            st_dev = os.stat(existing_path_str).st_dev
+            sys_dev_block = Path(f"/sys/dev/block/{os.major(st_dev)}:{os.minor(st_dev)}")
+            if sys_dev_block.exists():
+                real_sys = sys_dev_block.resolve()
+                part_name = real_sys.name
+                if os.path.exists(f"/dev/{part_name}"):
+                    resolved_dev = f"/dev/{part_name}"
+                if os.path.exists(f"/sys/block/{part_name}"):
+                    return resolved_dev, part_name
+                if os.path.exists(f"/sys/block/{real_sys.parent.name}"):
+                    return resolved_dev, real_sys.parent.name
+        except Exception:
+            pass
+
+    if not resolved_dev.startswith("/dev/"):
+        return resolved_dev, ""
     try:
-        real_dev = os.path.realpath(dev_path)
+        real_dev = os.path.realpath(resolved_dev)
     except Exception:
-        real_dev = dev_path
+        real_dev = resolved_dev
     name = os.path.basename(real_dev)
     # Direct match in /sys/block
     if os.path.exists(f"/sys/block/{name}"):
-        return name
+        return resolved_dev, name
     # Partition match in /sys/class/block/<part>
     sys_part = Path(f"/sys/class/block/{name}")
     if sys_part.exists():
@@ -216,17 +234,17 @@ def resolve_parent_block_name(dev_path: str) -> str:
             resolved_sys = sys_part.resolve()
             parent = resolved_sys.parent.name
             if os.path.exists(f"/sys/block/{parent}"):
-                return parent
+                return resolved_dev, parent
         except Exception:
             pass
     # Regex fallback for nvme0n1p1 -> nvme0n1 or sda1 -> sda
     m_nvme = re.match(r"^(nvme\d+n\d+)p\d+$", name)
     if m_nvme:
-        return m_nvme.group(1)
+        return resolved_dev, m_nvme.group(1)
     m_sd = re.match(r"^([a-z]+)\d+$", name)
     if m_sd:
-        return m_sd.group(1)
-    return name
+        return resolved_dev, m_sd.group(1)
+    return resolved_dev, name
 
 
 def inspect_disk_for_path(role: str, target_path: str, mounts: list[dict], run_io_probe: bool = False) -> dict:
@@ -257,9 +275,9 @@ def inspect_disk_for_path(role: str, target_path: str, mounts: list[dict], run_i
     except Exception:
         pass
 
-    dev = matched_mount["device"]
+    raw_dev = matched_mount["device"]
     fstype = matched_mount["filesystem_type"]
-    parent_blk = resolve_parent_block_name(dev)
+    dev, parent_blk = resolve_parent_block_name(raw_dev, existing_str)
 
     rotational = None
     scheduler = ""

@@ -689,7 +689,10 @@ if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
     "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
-    echo "port = $CHECK_PGPORT" >> "$CHECK_PGDATA/postgresql.conf"
+    {
+        echo "port = $CHECK_PGPORT"
+        echo "unix_socket_directories = '/tmp'"
+    } >> "$CHECK_PGDATA/postgresql.conf"
     "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
@@ -701,7 +704,10 @@ elif [[ "$CHECK_WORLD_MODE" == "fast" ]]; then
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
     "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
-    echo "port = $CHECK_PGPORT" >> "$CHECK_PGDATA/postgresql.conf"
+    {
+        echo "port = $CHECK_PGPORT"
+        echo "unix_socket_directories = '/tmp'"
+    } >> "$CHECK_PGDATA/postgresql.conf"
     "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
     PROVE_TESTS="t/002_pgbench_no_server.pl" make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" installcheck >>"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false

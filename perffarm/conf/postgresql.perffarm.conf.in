@@ -10,6 +10,7 @@
 
 # --- Connection & Network Settings ---
 listen_addresses = '@LISTEN_ADDRESSES@'
+unix_socket_directories = '/tmp'
 max_connections = @MAX_CONNECTIONS@
 superuser_reserved_connections = 3
 

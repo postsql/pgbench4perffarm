@@ -162,6 +162,7 @@ ensure_local_cluster() {
 # --- Perffarm Metrics Database Settings ---
 listen_addresses = '*'
 port = ${METRICS_DB_PORT}
+unix_socket_directories = '/tmp'
 max_connections = 100
 shared_buffers = 256MB
 work_mem = 16MB
@@ -177,6 +178,8 @@ host    all             all             ::1/128                 trust
 host    all             all             0.0.0.0/0               trust
 host    all             all             ::/0                    trust
 EOF
+    elif ! grep -q "^unix_socket_directories" "$METRICS_DB_DATADIR/postgresql.conf" 2>/dev/null; then
+        echo "unix_socket_directories = '/tmp'" >> "$METRICS_DB_DATADIR/postgresql.conf"
     fi
 
     if ! "$PG_CTL" -D "$METRICS_DB_DATADIR" status >/dev/null 2>&1; then

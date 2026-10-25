@@ -98,13 +98,13 @@ When `pgbench` starts with `--log-db`, `logDbBootstrapAndStartRun()` automatical
 ### 2.3 Built-In Views
 
 - **`pgbench_runs_v`**: Cleanly formatted catalog view of all runs ordered by `run_id DESC` with rounded numeric metrics (`tps`, `latency_avg_ms`, `latency_p50_ms`, `latency_p95_ms`, `latency_p99_ms`, `ontime_pct`, `recall_avg`, `recall_p5`, `recall_deg_pct`, `validation_pct`, `sla_all_passed`).
-- **`pgbench_live_progress_v`**: Joins active runs (`status = 'running'`) with `pgbench_progress_log` to compute cumulative transaction counts, live average TPS, peak TPS, and latest tick metrics for real-time monitoring.
+- **`pgbench_live_progress_v`**: Joins `pgbench_progress_log` with `pgbench_runs` (`run_id`, `run_label`, `status`, `target_db`, `progress_at`, `ts_epoch_sec`, `elapsed_sec`, `tps`, `latency_avg_ms`, `latency_stddev_ms`, `lag_avg_ms`, `failed_cnt`) ordered by `run_id DESC, elapsed_sec ASC` for real-time progress monitoring.
 
 ---
 
 ## 3. In-Database SQL Inspection & Regression Comparison SRFs
 
-`pgbench` automatically installs 5 overloaded Set-Returning Functions (SRFs) in the telemetry schema so you can inspect runs and detect performance regressions directly from `psql` or CI scripts.
+`pgbench` automatically installs 6 SQL functions (including 5 overloaded Set-Returning Functions and the `pgbench_viewer_payload_json` JSONB aggregator) in the telemetry schema so you can inspect runs and detect performance regressions directly from `psql` or CI scripts.
 
 ### 3.1 Single-Run Vertical Report (`pgbench_show_run`)
 
@@ -119,7 +119,7 @@ SELECT * FROM pgbench_show_run(42);
 SELECT * FROM pgbench_show_run('c-scale4-baseline');
 ```
 
-Returns rows of `(section text, item text, metric text, value text)` covering `run_info`, `overall`, `latency_ms`, `schedule_lag_ms`, `validation`, `recall`, `named_recall`, `group`, `script`, and `sla`.
+Returns rows of `(section text, scope text, metric text, value text, unit text, details text)` across 7 sections: `'1. Run Info'`, `'2. Overall Metrics'`, `'3. Client Groups'`, `'4. Scripts'`, `'5. Recall & Aging'`, `'6. Commands'`, and `'7. SLA Verifications'`.
 
 ### 3.2 Pairwise Regression Diff (`pgbench_compare_runs`)
 
@@ -127,32 +127,32 @@ Compare any two runs by `run_id` or `run_label`:
 
 ```sql
 -- Compare baseline and candidate runs by run_label
-SELECT category, target, metric,
-       round(baseline_val::numeric, 3) AS base,
-       round(candidate_val::numeric, 3) AS cand,
-       round(delta_pct::numeric, 2) AS delta_pct,
-       status
+SELECT scope, metric, unit,
+       round(base_val::numeric, 3) AS base,
+       round(cand_val::numeric, 3) AS cand,
+       round(pct_change::numeric, 2) AS pct_change,
+       verdict
 FROM pgbench_compare_runs('pg20-baseline', 'pg20-candidate');
 
 -- Or compare by numeric run_id
 SELECT * FROM pgbench_compare_runs(1, 2);
 ```
 
-Returns `(category, target, metric, baseline_val, candidate_val, delta, delta_pct, status)` where `status` automatically classifies changes (`> 1%` threshold) using metric polarity awareness:
-- Higher-is-better metrics (`tps`, `ontime_pct`, `recall_avg`, `validation_pct`): positive delta $\rightarrow$ `IMPROVEMENT`, negative delta $\rightarrow$ `REGRESSION`.
-- Lower-is-better metrics (`latency_avg_ms`, `latency_p50_ms`..`latency_p99_9_ms`, `lag_p99_ms`, `transactions_failed`, `recall_deg_pct`): negative delta $\rightarrow$ `IMPROVEMENT`, positive delta $\rightarrow$ `REGRESSION`.
+Returns `(scope text, metric text, unit text, base_val float8, cand_val float8, abs_delta float8, pct_change float8, verdict text)` where `verdict` automatically classifies changes (`> 1%` threshold) using metric polarity awareness (`'IMPROVED'`, `'REGRESSED'`, `'UNCHANGED'`, or `'N/A'`):
+- Higher-is-better metrics (`tps`, `ontime_pct`, `recall_avg`, `recall_p5`, `recall_p50`, `recall_p95`, `validation_pct`, `initial_q1`, `mature_q4`): positive delta (`> +1%`) $\rightarrow$ `IMPROVED`, negative delta (`< -1%`) $\rightarrow$ `REGRESSED`.
+- Lower-is-better metrics (`latency_avg_ms`, `latency_p50_ms`..`latency_p99_9_ms`, `lag_avg_ms`, `lag_p95_ms`, `lag_p99_ms`, `transactions_failed`, `recall_deg_pct`, `degradation_pct`): negative delta (`< -1%`) $\rightarrow$ `IMPROVED`, positive delta (`> +1%`) $\rightarrow$ `REGRESSED`.
 
 ### 3.3 Multi-Run N-Way Matrix Comparison (`pgbench_compare_runs(bigint[])`)
 
-Compare 3 or more runs simultaneously (e.g., across scale factors, PostgreSQL major versions, or patch iterations):
+Compare 2 or more runs simultaneously (e.g., across scale factors, PostgreSQL major versions, or patch iterations) relative to the first run in the array (`p_run_ids[1]`):
 
 ```sql
-SELECT category, target, metric,
-       values_by_run,
-       round(min_val::numeric, 2) AS min_val,
-       round(max_val::numeric, 2) AS max_val,
-       round(spread_pct::numeric, 2) AS spread_pct,
-       pct_vs_first
+SELECT scope, metric, unit,
+       run_id, run_label,
+       round(val::numeric, 3) AS val,
+       round(delta_vs_base::numeric, 3) AS delta_vs_base,
+       round(pct_vs_base::numeric, 2) AS pct_vs_base,
+       sla_all_passed
 FROM pgbench_compare_runs(ARRAY[1, 2, 3, 4]::bigint[]);
 ```
 
@@ -182,7 +182,7 @@ Then open `http://localhost:8094` in your browser.
 | `--schema SCHEMA` | `PGBENCH_LOG_DB_SCHEMA` | `public` | Schema containing `pgbench_runs` and telemetry functions. |
 | `--host HOST` | — | `0.0.0.0` | Bind address for the HTTP server. |
 | `--port PORT` | — | `8094` | HTTP listen port. |
-| `--psql-bin PATH` | — | `psql` | Fallback `psql` binary used automatically if Python `psycopg` (`psycopg3`) or `psycopg2` is not installed. |
+| `--psql-bin PATH` | — | `psql` | Fallback `psql` binary used automatically if Python `psycopg` (`psycopg3`) is not installed. |
 
 > **Zero External Python Dependencies**: `pgbench_viewer.py` vendors `bottle.py` (`v0.12.20`) in the same directory and automatically falls back to invoking `psql -X -q -t -A` when `psycopg` is not installed in the Python environment.
 
@@ -197,15 +197,15 @@ Then open `http://localhost:8094` in your browser.
    - Displays the collapsible `pgbench_show_run(run_id)` vertical breakdown, per-group/per-script tables, SLA rule verifications, and per-command latency profile (`pgbench_run_commands`).
 2. **Pairwise Run Comparison (`GET /?mode=compare&base_id=<b_id>&cand_id=<c_id>`)**:
    - Overlays baseline and candidate TPS time-series curves on a dual-series WASM SVG chart.
-   - Renders the full `pgbench_compare_runs(base_id, cand_id)` diff table with color-coded `IMPROVEMENT`, `REGRESSION`, and `NEUTRAL` badges.
+   - Renders the full `pgbench_compare_runs(base_id, cand_id)` diff table with color-coded `IMPROVED`, `REGRESSED`, and `UNCHANGED` badges.
 3. **Multi-Run Matrix (`GET /?mode=multi&run_ids=1,2,3`)**:
    - Plots a multi-run WASM SVG bar chart comparing throughput and latency across all selected `run_ids`.
-   - Renders the N-way `pgbench_compare_runs(bigint[])` matrix with min, max, spread %, and percentage delta relative to the first selected run.
+   - Renders the N-way `pgbench_compare_runs(bigint[])` matrix with `val`, `delta_vs_base`, `pct_vs_base` relative to the first selected run, and `sla_all_passed`.
 4. **Real-Time Live Monitor (`GET /live`)**:
    - Automatically detects any benchmark currently executing with `status = 'running'` in `pgbench_runs`.
    - Polls `/api/payload?mode=live` every 1s, 2s, or 5s (configurable in the toolbar) and updates live KPI cards, cumulative TPS, and streaming WASM SVG progress charts in place without page reloads.
 5. **Two-Stage Metatemplate SQL Data Explorer (`GET /explorer`)**:
-   - Provides 6 curated one-click SQL presets (`Run Catalog Overview`, `Per-Script Latency Breakdown`, `Command Profile (-r)`, `SLA Compliance Audit`, `Aggregate Interval Windows`, `Progress Time Series`) plus an interactive editor for custom read-only `SELECT` / `WITH` / `TABLE` / `VALUES` queries.
+   - Provides 6 curated one-click SQL presets (`1. Runs Overview (pgbench_runs_v)`, `2. Latest Run Full Breakdown (pgbench_show_run())`, `3. Top Slowest SQL/Meta Commands Across Runs`, `4. Per-Second Throughput & Tail Latency (pgbench_tx_log)`, `5. Vector Recall@K & Index Aging Degradation`, `6. Live Progress Stream (pgbench_live_progress_v)`) plus an interactive editor for custom read-only `SELECT` / `WITH` / `TABLE` / `VALUES` queries (up to `max_rows = 500` rows inside a `READ ONLY` transaction).
    - **Two-Stage Bottle Metatemplate Engine**:
      - Stage 1 inspects the returned JSONB columns and runtime value types (`run_link`, `badge`, `meter_pct`, `meter_ratio`, `metric_num`, `num`, `json`, `text`) and expands `viewer/html/explorer_table_meta.html.stpl` (using custom `<@ @> @ {| |}` delimiters) into a tailored Stage-2 `bottle.SimpleTemplate` (`stpl`) template.
      - Stage 2 renders the synthesized template into semantic HTML with inline percentage meters, clickable `run_id` links, status badges, and an automatic WASM SVG bar chart for numeric columns.

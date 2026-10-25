@@ -10,10 +10,10 @@ Unlike traditional database benchmarks that only measure throughput (TPS) and la
 
 ## 1. Key Capabilities & Extension Support
 
-### 1.1 Works With or Without `pgvector` (`CREATE EXTENSION vector`)
-`pgbench_vec_schema.sql` automatically detects whether the `vector` extension (`pgvector`) is available on the target PostgreSQL server:
-- **When `pgvector` is installed**: Embedding columns use native `vector(dim)` types and `<->` (L2), `<=>` (Cosine), or `<#>` (Inner Product) operators with HNSW or IVFFlat indexes.
-- **When `pgvector` is not installed**: `pgbench-vec` seamlessly runs on any stock PostgreSQL 14–20devel instance using `contrib/pgbench`'s fast C `pgbench.vector_distance(v1, v2, 'l2')` function over formatted vector representations.
+### 1.1 Works Out-of-the-Box With or Without `pgvector`
+`pgbench_vec_schema.sql` is designed to run on any stock PostgreSQL 14–20devel server while also supporting custom `pgvector` (`CREATE EXTENSION vector`) workloads:
+- **Zero-External-Extension Default (`pgbench_vec_schema.sql`)**: Embedding columns (`embedding float4[]`, `image_embedding float4[]`) use SQL helper functions (`pgbench_vec_parse`, `pgbench_vec_l2_sq`, `pgbench_vec_dot`, `pgbench_vec_cosine`) alongside `contrib/pgbench`'s C `pgbench.vector_distance(v1, v2, 'l2')` / `'cosine'` / `'ip'` functions.
+- **Native `pgvector` Compatibility**: Because `pgbench`'s `PGBT_VECTOR` type formats dense vectors as `'[x1,x2,...]'` (and sparse vectors as `'{i1:v1,...}/dim'`), scripts can also cast `:qvec::vector` directly against `vector(dim)` columns with `<->` (L2), `<=>` (Cosine), or `<#>` (Inner Product) operators and HNSW / IVFFlat indexes.
 
 ### 1.2 First-Class Vector Support in `pgbench`
 - **Native `PGBT_VECTOR` Script Type**: Client variables store dense float vectors (`[0.12, -0.34, ...]`) and sparse vectors (`{1:0.5, 42:0.8}/1000`), automatically parsed by `\gset` and `\gset_col`.
@@ -165,15 +165,15 @@ Example `--json-report` excerpt from a `pgbench-vec` run:
 
 ## 6. Benchmarking External Binary Vector Datasets (`.fvecs`, `.bvecs`, `.ivecs`)
 
-To benchmark standard external ANN datasets (such as SIFT1M, GIST1M, or Deep1B in Texmex `.fvecs` / `.bvecs` / `.ivecs` binary format), pass `--vector-dataset`, `--vector-base`, and `--ground-truth-table`:
+To benchmark standard external ANN datasets (such as SIFT1M, GIST1M, or Deep1B in Texmex `.fvecs` / `.bvecs` / `.ivecs` binary format), pass `--vector-dataset` (or the `--vector-base`, `--vector-query`, and `--ground-truth-table` shorthand flags, which register datasets `"base"`, `"query"`, and `"ground_truth"` respectively):
 
 ```bash
 pgbench -n -c 8 -j 4 -T 60 \
-    --vector-base="base:/data/sift/sift_base.fvecs" \
-    --vector-dataset="queries:/data/sift/sift_query.fvecs:0based" \
-    --ground-truth-table="gt:/data/sift/sift_groundtruth.ivecs" \
+    --vector-base="sift_items:0based:/data/sift/sift_base.fvecs" \
+    --vector-dataset="queries:/data/sift/sift_query.fvecs" \
+    --vector-dataset="gt:/data/sift/sift_groundtruth.ivecs" \
     -f custom_sift_search.sql \
-    --sla="total:recall>=0.95" \
+    --sla="total:sift_r10:recall>=0.95" \
     bench_vec
 ```
 

@@ -122,14 +122,15 @@ pgbench --config=workloads/pgbench-c/pgbench_c.pgbench.json \
 Modeled after the TPC-E financial brokerage specification, `pgbench-e` simulates customers, brokers, securities exchanges, market feeds, and trade execution across a rich relational schema with foreign keys, check constraints, and 10 stored procedures.
 
 ### Schema & Transaction Mix
-- **Tables (16)**: `account_permission`, `customer`, `customer_account`, `customer_taxrate`, `holding`, `holding_history`, `holding_summary`, `watch_item`, `watch_list`, `broker`, `cash_transaction`, `charge`, `commission_rate`, `settlement`, `trade`, `trade_history`, `trade_request`, `trade_type`, `company`, `daily_market`, `exchange`, `financial`, `industry`, `last_trade`, `news_item`, `news_xref`, `sector`, `security`, `status_type`, `taxrate`, `zip_code` (consolidated into 16 core operational tables).
+- **Tables (16)**: `broker`, `company`, `security`, `last_trade`, `customer`, `customer_account`, `holding`, `holding_summary`, `watch_list`, `watch_item`, `trade_type`, `trade`, `trade_history`, `trade_request`, `cash_transaction`, `settlement`.
+- **Stored Procedures (10)**: `pgbench_e_trade_order`, `pgbench_e_trade_result`, `pgbench_e_trade_status`, `pgbench_e_customer_position`, `pgbench_e_broker_volume`, `pgbench_e_market_watch`, `tpce_trade_lookup`, `tpce_trade_update`, `tpce_security_detail`, `tpce_market_feed`.
 - **Weighted Scripts (6)**:
   - `pgbench_e_trade_order.sql` (**10%**): Submits market or limit trade orders (`CALL pgbench_e_trade_order(...)`), with 1% intentional rollback caught via `\try`/`\catch`.
-  - `pgbench_e_trade_result.sql` (**10%**): Completes trade settlement, updates holdings, and triggers Market-Feed updates (`CALL pgbench_e_trade_result(...)` + `CALL pgbench_e_market_feed(...)`).
-  - `pgbench_e_customer_position.sql` (**13%**): Reads customer account valuations and security details.
-  - `pgbench_e_market_watch.sql` (**18%**): Computes percentage change across a customer's watch list, industry, or company index.
-  - `pgbench_e_broker_volume.sql` (**5%**): Aggregates pending trade volume across a sector for a group of brokers.
-  - `pgbench_e_trade_status.sql` (**44%**): High-frequency read lookup of recent trade statuses and trade history.
+  - `pgbench_e_trade_result.sql` (**10%**): Completes trade settlement, updates holdings, and triggers Market-Feed updates (`CALL pgbench_e_trade_result(...)` + `CALL tpce_market_feed(...)`).
+  - `pgbench_e_customer_position.sql` (**13%**): Reads customer account valuations and security details (`CALL pgbench_e_customer_position(...)` + `CALL tpce_security_detail(...)`).
+  - `pgbench_e_market_watch.sql` (**18%**): Computes percentage change across a customer's watch list, industry, or company index (`CALL pgbench_e_market_watch(...)`).
+  - `pgbench_e_broker_volume.sql` (**5%**): Aggregates pending trade volume across a group of brokers (`CALL pgbench_e_broker_volume(...)`).
+  - `pgbench_e_trade_status.sql` (**44%**): High-frequency read lookup of recent trade statuses and trade history (`CALL pgbench_e_trade_status(...)` + `CALL tpce_trade_lookup(...)`).
 
 ### Initialize & Run
 ```bash

@@ -74,7 +74,7 @@ The `pgbench` codebase is modularized into 12 cohesive subsystems with clean own
 | script.c / .h | |commands.c/.h | |dataset.c / .h| | stats.c / .h | | logdb.c / .h |
 | exprscan.l    | |39 Backslash  | |mmap Datasets | |HDR Histograms| |--log-db COPY |
 | exprparse.y   | |Meta-Commands | |Reservoirs &  | |Recall@K Rings| |9 Tables &    |
-| 49 Functions  | |Dispatch Table| |Watermarks    | |SLA Verifier  | |SQL Diff SRFs |
+| 61 Functions  | |Dispatch Table| |Watermarks    | |SLA Verifier  | |SQL Diff SRFs |
 +-------+-------+ +------+-------+ +--------------+ +--------------+ +------+-------+
         |                |                                                  |
         v                v                                                  v
@@ -104,7 +104,7 @@ The `pgbench` codebase is modularized into 12 cohesive subsystems with clean own
 | **CLI & Orchestration** | `src/bin/pgbench/pgbench.c`, `pgbench.h` | CLI option parsing, flag validation, client group setup (`parseClientGroup`), `--sla` rule parsing (`parseSlaSpec`), and top-level lifecycle management. |
 | **Declarative Config** | `src/bin/pgbench/config.c`, `config.h` | Parses `.pgbench.json` (JSON and JSONC with `//`, `#`, `/*...*/` comments and trailing commas), resolves relative script/dataset paths, executes `init_steps[]` when `-i` is passed, replays `--json-report` files directly, and exports effective configurations via `--dump-config`. |
 | **Execution Engine** | `src/bin/pgbench/engine.c`, `engine.h` | Multi-threaded worker loop (`threadRun`), non-blocking client state machine (`advanceConnectionState`), libpq pipeline execution, error/retry handling (`\try`/`\catch`, serialization `40001` & deadlock `40P01`), and `--json-report` generation. |
-| **Script & Expression Compiler** | `src/bin/pgbench/script.c`, `script.h`, `exprscan.l`, `exprparse.y` | Parses custom and built-in scripts, statically links control-flow jump targets (`\if`, `\for`, `\while`, `\try`/`\catch`), compiles expressions via Flex/Bison, and evaluates all 49 client-side functions (`evaluateExpr`). |
+| **Script & Expression Compiler** | `src/bin/pgbench/script.c`, `script.h`, `exprscan.l`, `exprparse.y` | Parses custom and built-in scripts, statically links control-flow jump targets (`\if`, `\for`, `\while`, `\try`/`\catch`), compiles expressions via Flex/Bison, and evaluates all 61 client-side functions (`evaluateExpr`). |
 | **Meta-Command Handlers** | `src/bin/pgbench/commands.c`, `commands.h` | Pluggable `CommandDescriptor` registry and runtime handlers for all 39 backslash meta-commands (`\set`, `\gset`, `\aset`, `\gset_col`, `\gset_meta`, `\sleep`, `\keying_time`, `\think_time`, `\call`, `\phase_barrier`, `\validate_result`, `\record_recall`, etc.). |
 | **Scoped Variables & Types** | `src/bin/pgbench/variable.c`, `variable.h` | Scoped variable store (`VariableSpace` for subroutine `\call` frames) and tagged-union `PgBenchValue` supporting `INT`, `DOUBLE`, `BOOLEAN`, `TEXT`, `TIMESTAMP`, `ARRAY`, `VECTOR`, `BYTEA`, and `NULL`, with automatic SQL literal quoting and `:arr[:idx]` subscripting. |
 | **Statistics & SLAs** | `src/bin/pgbench/stats.c`, `stats.h` | `SimpleStats` and `StatsData` accumulators, 3,968-bucket base-2 sub-bucketed HDR latency and schedule-lag histograms (~0.78% relative error), 10-bucket `Recall@K` distributions, 32-sample Q1/Q4 aging ring buffers, and `mergeStats()`. |
@@ -228,10 +228,10 @@ Pass one or more `--sla` specifications on the command line (or in `.pgbench.jso
 
 | Field | Supported Values | Examples |
 | :--- | :--- | :--- |
-| `<target>` | `total` / `overall` / `all` / `*` (default), `<group_name>` / `group:<name>`, `<script_name>` / `script:<name>` | `total:`, `oltp:`, `group:snb_readers:` |
-| `<named_metric>` | Any named recall stream recorded via `\record_recall name=<metric>` | `r_unfiltered:`, `r_prefilter:`, `r_aging:` |
-| `<metric>` | `p<X>` / `latency:p<X>`, `avg` / `latency_avg`, `lag:p<X>` / `schedule_lag:p<X>`, `ontime_pct`, `recall` / `recall_avg`, `recall:p<X>`, `tps` / `qps`, `error_rate`, `validation_failures`, `validation_pct` | `p95<=50ms`, `lag:p99<=10ms`, `ontime_pct>=95%`, `recall>=0.90`, `tps>=500`, `error_rate<=0%`, `validation_failures<=0` |
-| `<operator>` | `<=`, `<`, `>=`, `>` | `<=`, `>=` |
+| `<target>` | `total` / `all` / `*` (default when omitted), `<group_name>`, `<script_name>` (or script basename without `.sql`) | `total:`, `oltp:`, `snb_readers:`, `pgbench_c_new_order:` |
+| `<named_metric>` | Any named recall stream recorded via `\record_recall ... <metric_name>` (or `schedule_lag` when combined with `:p<X>`) | `r_unfiltered:`, `r_prefilter:`, `r_aging:`, `schedule_lag:` |
+| `<metric>` | `p<X>` (e.g., `p50`, `p95`, `p99`, `p99.9`), `avg` / `latency_avg`, `schedule_lag:p<X>` / `schedule_lag_p<X>`, `ontime_pct` *(when `-R` / `rate=` or `--replay` is active)*, `recall`, `recall_p<X>` / `recall:p<X>`, `tps` / `qps`, `error_rate`, `validation_failures`, `validation_pct` | `p95<=50ms`, `schedule_lag:p99<=10ms`, `ontime_pct>=95%`, `recall>=0.90`, `r_unfiltered:recall>=0.95`, `r_unfiltered:recall:p5>=0.80`, `tps>=500`, `error_rate<=0%`, `validation_failures<=0` |
+| `<operator>` | `<=`, `>=` | `<=`, `>=` |
 | `<threshold>` | Number with optional unit (`us`, `ms`, `s`, `%`) | `100ms`, `1.5s`, `0.95`, `99.9%`, `0` |
 
 ### 5.3 Process Exit Codes
@@ -255,27 +255,33 @@ Passing `--json-report=results.json` writes a machine-readable JSON document con
 ## 6. External Datasets (`--dataset`, `--vector-dataset`) & Trace Replay (`--replay`)
 
 ### 6.1 Zero-Copy `mmap` Datasets
-In addition to in-database synthetic data generation via `contrib/pgbench`, `pgbench` can memory-map external columnar CSV/TSV files and binary vector files (`.fvecs`, `.bvecs`, `.ivecs`) into shared read-only memory:
+In addition to in-database synthetic data generation via `contrib/pgbench`, `pgbench` can memory-map external columnar CSV/TSV files and binary vector files (`.fvecs`, `.bvecs`, `.ivecs`) into shared read-only memory (`--dataset="<name>[:<format>][:header]=<path>"` or `--dataset="<name>:<path>[:<format>][:header]"`):
 
 ```bash
-# Memory-map a CSV dataset and bulk-load it into a table before running scripts
-pgbench --dataset="users:/data/users.csv:header,format=csv" \
+# Memory-map a CSV dataset with a header row and bulk-load it into a table before running scripts
+pgbench --dataset="users:/data/users.csv:csv:header" \
         --copy-dataset="users:app_users(id,name,email)" \
         -f workload.sql bench_db
 
 # Memory-map SIFT1M / GIST1M binary vector files (.fvecs = float32, .ivecs = int32 ground truth)
-pgbench --vector-dataset="base:/data/sift_base.fvecs:0based" \
-        --vector-dataset="queries:/data/sift_query.fvecs:0based" \
-        --ground-truth-table="gt:/data/sift_groundtruth.ivecs" \
+pgbench --vector-dataset="base:/data/sift_base.fvecs" \
+        --vector-dataset="queries:/data/sift_query.fvecs" \
+        --vector-dataset="gt:/data/sift_groundtruth.ivecs" \
+        -f vec_bench.sql bench_db
+
+# Or use shorthand flags (registers datasets "base", "query", and "ground_truth" with optional 0based/1based ID offset)
+pgbench --vector-base="pgbench_vec_items:0based:/data/sift_base.fvecs" \
+        --vector-query="0based:/data/sift_query.fvecs" \
+        --ground-truth-table="0based:/data/sift_groundtruth.ivecs" \
         -f vec_bench.sql bench_db
 ```
 
-Inside scripts, bind rows using `\dataset_bind <name> <seq|rand|partitioned|sample|AT <idx>> :var1 ...` or expression functions `dataset_count('name')`, `dataset_get('name', row, col)`, and `dataset_next_id('name', 'seq')`.
+Inside scripts, bind rows using `\dataset_bind <name> <wrap|once|partitioned|sample|AT <idx>> var1 ...` or expression functions `dataset_count('name')`, `dataset_get('name', row, col)`, and `dataset_next_id('name', 'wrap')`.
 
 ### 6.2 Deterministic Trace Replay (`--replay`, `--replay-speed`, `--tcr`)
 Replay production or benchmark timestamp traces directly with `--replay=<trace.csv>` or pace script execution using `\wait_until :ts_us`:
-- `--replay-speed=<factor>`: Speeds up or slows down trace timestamps (`2.0` = $2\times$ faster).
-- `--tcr=<factor>`: Timestamp Compression Ratio (`replay_speed = 1.0 / tcr`; e.g., `--tcr=0.1` runs $10\times$ faster than wall-clock trace intervals).
+- `--replay-speed=<factor>`: Speeds up or slows down trace timestamps (`scaled_us = offset_us / replay_speed`; e.g., `2.0` runs $2\times$ faster than recorded wall-clock intervals, and `0.5` runs at half speed).
+- `--tcr=<factor>`: Alias for `--replay-speed=<factor>`.
 - `--ontime-threshold=<ms>`: Defines the maximum schedule lag (default `50.0` ms) counted as "on-time" in `ontime_pct` (`--sla="ontime_pct>=95%"`).
 
 ---

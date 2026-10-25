@@ -16,7 +16,7 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
   - `workloads/pgbench-c/` — 9-table wholesale supplier OLTP (`pgbench-c`: `pgbench_c.pgbench.json`)
   - `workloads/pgbench-e/` — 16-table financial brokerage OLTP (`pgbench-e`: `pgbench_e.pgbench.json`)
   - `workloads/pgbench-h/` — 8-table decision support analytics (`pgbench-h`: `pgbench_h.pgbench.json`)
-  - `workloads/pgbench-ds/` — 24-table retail/web/catalog decision support (`pgbench-ds`: `pgbench_ds.pgbench.json`)
+  - `workloads/pgbench-ds/` — 13-table retail/web/catalog decision support (`pgbench-ds`: `pgbench_ds.pgbench.json`)
   - `workloads/pgbench-htap/` — Hybrid transactional/analytical processing (`pgbench-htap`: `pgbench_htap.pgbench.json`)
   - `workloads/pgbench-graph/` — Graph & social network analytics (`pgbench-graph`: `lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`)
   - `workloads/pgbench-vec/` — Multi-modal vector similarity search (`pgbench-vec`: `vec_hybrid.pgbench.json`, `vec_aging.pgbench.json`)
@@ -31,7 +31,7 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
 - **[TPC-Inspired & HTAP Workloads Guide](doc/tpc-and-htap-workloads.md)** (`doc/tpc-and-htap-workloads.md`) — Parallel in-database initialization and execution guide for `pgbench-b`, `pgbench-c`, `pgbench-e`, `pgbench-h`, `pgbench-ds`, and CH-benCHmark-inspired `pgbench-htap`.
 - **[Graph Database Workloads Guide](doc/graph-workloads.md)** (`doc/graph-workloads.md`) — LDBC-inspired social and financial graph benchmark suites (`LSQB`, `SNB Interactive v1/v2`, `SNB BI`, `FinBench`, and `Graphalytics`) across `SQL`, `SQL_UD` (`UNION DISTINCT ON`), and ISO `SQL/PGQ` (`GRAPH_TABLE`).
 - **[Vector Similarity Search & Index Aging Guide](doc/vector-workloads.md)** (`doc/vector-workloads.md`) — VecBench-inspired vector ANN and hybrid RAG suite (`pgbench-vec` Modes 1–6), exact ground-truth generation, named `Recall@K` SLAs, 10-bucket tail distributions, and `Q1`-vs-`Q4` index aging degradation.
-- **[Benchmark Scripting Language, Expressions & `contrib/pgbench` Guide](doc/benchmark-language-guide.md)** (`doc/benchmark-language-guide.md`) — Complete reference for the `PgBenchValue` runtime type system, all 39 backslash meta-commands, all 49 client-side expression functions, and all 51 `contrib/pgbench` server-side SQL functions.
+- **[Benchmark Scripting Language, Expressions & `contrib/pgbench` Guide](doc/benchmark-language-guide.md)** (`doc/benchmark-language-guide.md`) — Complete reference for the `PgBenchValue` runtime type system, all 39 backslash meta-commands, all 61 client-side expression functions, and all 51 `contrib/pgbench` server-side SQL functions.
 
 ## Building and Installing
 

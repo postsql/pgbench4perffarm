@@ -45,15 +45,15 @@ Every client automatically initializes the following variables:
 | **`\gset`** | `<SQL> \gset [<prefix>]` | Executes `<SQL>`, expects 1 row, and binds each column `<col>` to `:<prefix><col>`. Automatically parses `{...}` PostgreSQL arrays into `PGBT_ARRAY` (setting `:<prefix><col>_count`), `[...]` vectors into `PGBT_VECTOR`, and `\x...` into `PGBT_BYTEA`. |
 | **`\aset`** | `<SQL1> \; <SQL2> \aset [<prefix>]` | When `<prefix>` is omitted, binds the last row of each query in a `\;` compound statement. When `<prefix>` is supplied, binds **all rows** of each column `<col>` into a `PGBT_ARRAY` variable `:<prefix><col>`. |
 | **`\gset_col`** | `<SQL> \gset_col <var> [<col_name_or_idx>]` | Executes `<SQL>` and captures **all rows** of a single column (default column `0`) into a 1D `PGBT_ARRAY` variable `:<var>` (up to `100,000` rows). Ideal for capturing ranked ID lists for `\record_recall`. |
-| **`\gset_meta`** | `<SQL> \gset_meta [<prefix>]` *(or standalone)* | Populates metadata variables from the most recent SQL command: `:<prefix>_status` (`"OK"` or `"ERROR"`), `:<prefix>_sqlstate`, `:<prefix>_nrows` / `:<prefix>_rowcount`, `:<prefix>_ntuples`, `:<prefix>_nfields`, and `:<prefix>_elapsed_us`. |
+| **`\gset_meta`** | `<SQL> \gset_meta [<prefix>]` | Attaches metadata capture to the preceding SQL command (default `<prefix>` is `meta`), populating `:<prefix>_status` (`"OK"` or `"ERROR"`), `:<prefix>_sqlstate`, and `:<prefix>_nrows` (plus `:<prefix>_<col>` from the last returned row when the query returns tuples and does not already use `\gset` / `\aset`). |
 
 ### 2.2 Control Flow & Loops (`\if`, `\for`, `\while`)
 
 ```sql
--- Conditional branching
+-- Conditional branching (note: equality uses SQL '=', inequality uses '<>' or '!=')
 \if :scale > 1 AND random(1, 100) <= 15
   \set supply_w_id random(1, :scale)
-\elif :scale == 1
+\elif :scale = 1
   \set supply_w_id 1
 \else
   \set supply_w_id :w_id
@@ -117,15 +117,15 @@ All three sleep commands are executed non-blockingly by `poller.c` and accept ar
 | **`\call`** | `\call <script_name> [<var>=<expr> ...]` | Invokes another loaded script (`-f <script>@<weight>`) as a subroutine with a pushed `VariableSpace` scope and returns to the caller upon completion. |
 | **`\session_connect`** | `\session_connect [db=<dbname>] [user=<user>]` | Opens or switches to a dynamic client connection (bounded globally by `--max-concurrent-sessions=<N>`). |
 | **`\session_disconnect`** | `\session_disconnect [<session_id>]` | Closes the current or specified dynamic session connection. |
-| **`\dataset_bind`** | `\dataset_bind <name> <seq\|rand\|partitioned\|sample\|AT <expr>> <var1> [<var2> ...]` | Binds columns from a memory-mapped `--dataset` or `--vector-dataset` into `:<var1>`, `:<var2>`, ... |
+| **`\dataset_bind`** | `\dataset_bind <name> <wrap\|once\|partitioned\|sample\|AT <expr>> <var1> [<var2> ...]` | Binds columns from a memory-mapped `--dataset` or `--vector-dataset` into `:<var1>`, `:<var2>`, ... (`wrap`/`next`, `once`, `partitioned`, `sample`/`random`, or `AT <row_idx>`). |
 | **`\copy_dataset`** | `\copy_dataset <name> <table> [(col1,...)]` | Streams memory-mapped dataset `<name>` into `<table>` via `COPY ... FROM STDIN`. |
-| **`\validate_result`** | `\validate_result <actual_expr> <expected_expr> [tol=<tol_expr>]` | Asserts `<actual_expr> == <expected_expr>` (within optional floating-point `<tol_expr>`), sets `:last_validation_ok`, and increments `validation_passed` or `validation_failed`. |
+| **`\validate_result`** | `\validate_result <actual_expr> <expected_expr> [tol=<tol_expr>]` | Asserts that `<actual_expr>` equals `<expected_expr>` (within optional floating-point `<tol_expr>`), sets `:last_validation_ok`, and increments `validation_passed` or `validation_failed`. |
 | **`\record_recall`** | `\record_recall [[name=]<metric>] <retrieved_var> <truth_var> [<k_expr>]` | Computes top-$K$ set-intersection recall between `PGBT_ARRAY` variables `:<retrieved_var>` and `:<truth_var>`, sets `:last_recall`, and updates global + named recall histograms and Q1/Q4 aging ring buffers. |
 | **Pipelining** | `\startpipeline` / `\syncpipeline` / `\endpipeline` | Starts, flushes, or ends a libpq extended-query pipeline block. |
 
 ---
 
-## 3. All 49 Client-Side Expression Functions (`src/bin/pgbench/exprparse.y`)
+## 3. All 61 Client-Side Expression Functions (`src/bin/pgbench/exprparse.y`)
 
 These functions execute directly inside the `pgbench` client process (in `\set`, `\if`, `\while`, `\for`, `\sleep`, `\validate_result`, and `\record_recall`) with zero database round-trips:
 
@@ -157,7 +157,7 @@ These functions execute directly inside the `pgbench` client process (in `\set`,
 - `date_add(base_date, offset, unit)`: Adds `offset` (`'seconds'`, `'minutes'`, `'hours'`, `'days'`, `'months'`, `'years'`) to `base_date`.
 - `int_to_date(base_date, val, max_val [, interval_str])`: Linearly maps `val` in `[0, max_val]` across a date window.
 
-### 3.4 Array, Vector & Graph Generators (14)
+### 3.4 Array, Vector & Graph Generators (15)
 - `array(e1, e2, ...)`: Constructs a 1D `PGBT_ARRAY`.
 - `array_generate(len, min [, max])`: Generates a 1D `PGBT_ARRAY` of length `len` filled with constant `min` or random integers in `[min, max]`.
 - `vector(f1, f2, ...)`: Constructs a dense `PGBT_VECTOR`.

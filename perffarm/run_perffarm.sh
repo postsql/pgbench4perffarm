@@ -396,10 +396,13 @@ else
 
     if [[ -n "$COMMIT_OVERRIDE" ]]; then
         log_info "Checking out requested commit '$COMMIT_OVERRIDE' on branch '$FIRST_BRANCH'..."
-        if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{commit}" 2>/dev/null; then
-            git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
-                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || \
-                git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || true
+        if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
+            git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || \
+                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
+                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || true
+            if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
+                git -C "$PG_SRC_DIR" fetch --shallow-since="60 days ago" origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || true
+            fi
         fi
         if ! git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1; then
             echo "[run_perffarm] ERROR: Failed to check out commit '$COMMIT_OVERRIDE' in $PG_SRC_DIR" >&2

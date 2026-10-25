@@ -1,0 +1,32 @@
+# PostgreSQL master daily clean-CI commits (24h intervals over the last month, chronological order)
+2c10c2ce4d7bcd57543a49ab402af02a39724e0a  # [01] 2026-09-24T21:57:05Z | Silence another "may be used uninitialized" compiler warning.
+f197fdee8265050bfefb2f5d00829a814ff05ae4  # [02] 2026-09-25T22:36:17Z | Doc: clarify there's no log_line_prefix in csvlog or jsonlog output.
+3c5d9d914fa5b8fb3f371dd97bdece032ca3598d  # [03] 2026-09-26T16:55:40Z | Don't emit garbage "\[un]restrict (null)" commands in pg_dump.
+5e59290402518db5b2876ecd627c7d79f73eaa44  # [04] 2026-09-27T21:55:02Z | Enforce pg_class.relchecks limit (32,767 or INT16_MAX)
+cc053b6e127763e4168f18585ca90a67600c270e  # [05] 2026-09-28T23:28:30Z | Fix crash in parallel autovacuum when no DSM segment can be created.
+dca6a9e320e0272f0ea8d7e076cda04b06050866  # [06] 2026-09-29T15:11:15Z | Prevent self-join elimination when RTEs' checkAsUser fields differ.
+a36e2f7cd21c36f6e8960e3b622526eaa7055bb9  # [07] 2026-09-30T21:28:14Z | Update time zone data files to tzdata release 2026e.
+1378aa13430e264a990a18597e9d8fdae740927e  # [08] 2026-10-01T22:29:22Z | Report per-index vacuum progress in pg_stat_progress_vacuum
+6f3bdadaadc4692050ca20dff53d3890088b9272  # [09] 2026-10-02T11:15:32Z | Write pg_attribute_counted_by() in front of the type
+9dcaea6edc8c3f8a658ff788c94b6a896ae254af  # [10] 2026-10-03T21:14:33Z | Map pg_attribute_counted_by() to _Field_size_() under MSVC
+3ff475ac12ec8d8d07cf3fd86144659285a59d83  # [11] 2026-10-04T14:46:08Z | Silence -fsanitize=function where we cast function pointers on purpose
+8b29b8da78ea77c74ce2e6b140dcdde45ccb0268  # [12] 2026-10-05T23:50:18Z | Fix sorting on extra grouping keys of child relations
+12f866cd5f72d65ed4435b8203540efde45ba01d  # [13] 2026-10-06T23:45:37Z | Fix handling of shutdown requests during an early crash restart
+1f2245371e31f0def347546f5ad250552a4eb8a4  # [14] 2026-10-07T18:56:04Z | Fix slotsync when logical decoding is disabled and re-enabled.
+1b5dd3a24a48659e8413ef8ddd8adb6653507a9d  # [15] 2026-10-08T22:03:07Z | Fix incorrect reinit of run-time pruning for EPQ rechecks
+15a947f30726cadff695b7601329d90b6703e268  # [16] 2026-10-09T22:01:02Z | refactor: Move BackendWritebackContext initialization
+9e7d152488f197e96f171f0714459c227c3f7693  # [17] 2026-10-10T23:38:58Z | Add nbtree README note on index-only scans in recovery.
+8e82d6610e7280d7870c0c36ff1c797e3cfb3e09  # [18] 2026-10-12T09:56:10Z | doc: Consistently use double quotes for attrs in ulinks
+6b3f8857aa83b214f9e7d2465d4e21d6ef75f39e  # [19] 2026-10-13T21:53:20Z | Delay qp_callback processing till after join removal.
+3c6665bf0266a7ae78117c3ed0299bfbd1f1331a  # [20] 2026-10-14T23:30:03Z | Disallow serialized callbacks for fixed-sized custom stats kinds
+856a6594d86e4a7c0e9490253912af3f6159802f  # [21] 2026-10-15T23:09:04Z | Report pages read from WAL buffers in pg_stat_io.hits
+26bd08fb5c069fbdf55867adc398cfca0f55d5c8  # [22] 2026-10-16T21:22:33Z | doc: Note that plan advice does not affect cached plans
+45fc51fcbf4534ea2f6f85e36f8155dbd5ba9851  # [23] 2026-10-17T15:02:49Z | Fix nbtree unsatisfiable row compare assertion failure.
+9d882c10bfb6f56a0a430872ef3040875535b06b  # [24] 2026-10-18T22:35:00Z | libpq: Revert the connection option "servicefile"
+0497318e4422cbb9bff8c075a53a50b12065147c  # [25] 2026-10-19T21:51:30Z | Fix two issues in deparsing.
+68af68ac691f2b57d29524a191debed9b0bdd558  # [26] 2026-10-20T22:49:30Z | Fix cross-version upgrade tests for commits 0497318e4 et al.
+fded90eec3ebab14a327a3c40263e2366eb3c42a  # [27] 2026-10-21T18:10:35Z | Reject currtid2() on unlogged tables during recovery.
+f52d405113c83f691fffac261bfec297209c21b4  # [28] 2026-10-22T23:02:18Z | Temporarily remove a test case that hits an unfixed bug
+126976a8ffcfa47f40d3df09243ebf4606001912  # [29] 2026-10-23T15:35:42Z | Emit null-keyed hash join outer tuples immediately when feasible.
+0019a1ecf4c7615a2570d21eeb4b32ae3b371f18  # [30] 2026-10-24T20:53:43Z | doc: Fix removal of FreeBSD mention in DocBook section
+dfd7ede529f288639760444a9c69f3f7bb65450c  # [31] 2026-10-25T19:14:13Z | Fix leaked hash scans in pg_listening_channels().

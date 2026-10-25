@@ -28,6 +28,23 @@ BENIGN_FATAL_PATTERNS = [
 ]
 
 
+SEVERE_LOG_PATTERNS = (
+    "PANIC:",
+    "TRAP:",
+    "FailedAssertion",
+    "Segmentation fault",
+    "FATAL:",
+    "cache reference leak",
+    "buffer refcount leak",
+    "TupleDesc reference leak",
+    "Snapshot reference leak",
+    "relcache reference leak",
+    "problem in alloc set",
+    "AddressSanitizer",
+    "runtime error:",
+)
+
+
 def inspect_server_log(log_path: str) -> dict:
     if not log_path or not Path(log_path).exists():
         return {
@@ -41,7 +58,7 @@ def inspect_server_log(log_path: str) -> dict:
     try:
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
-                if any(tok in line for tok in ("PANIC:", "TRAP:", "FailedAssertion", "Segmentation fault", "FATAL:")):
+                if any(tok in line for tok in SEVERE_LOG_PATTERNS):
                     if "FATAL:" in line and any(re.search(pat, line) for pat in BENIGN_FATAL_PATTERNS):
                         continue
                     severe_lines.append(line.strip()[:300])

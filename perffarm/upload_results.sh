@@ -205,6 +205,11 @@ def exec_remote(sql: str):
 def jlit(rows) -> str:
     return "'" + json.dumps(rows).replace("'", "''") + "'::jsonb"
 
+def slit(val) -> str:
+    if val is None:
+        return "NULL"
+    return "'" + str(val).replace("'", "''") + "'"
+
 animals = query_json(
     local_conn,
     f'SELECT COALESCE(json_agg(row_to_json(t)), \'[]\'::json) FROM "{local_schema}".perffarm_animals t WHERE animal_name = \'{animal_name}\';',
@@ -217,8 +222,139 @@ test_runs = query_json(
     local_conn,
     f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY test_run_id), \'[]\'::json) FROM "{local_schema}".perffarm_test_runs t WHERE batch_id = {batch_id};',
 )
-run_ids = [r["pgbench_run_id"] for r in test_runs if r.get("pgbench_run_id") is not None]
-run_ids_csv = ",".join(str(int(rid)) for rid in run_ids)
+run_ids = [int(r["pgbench_run_id"]) for r in test_runs if r.get("pgbench_run_id") is not None]
+run_ids_csv = ",".join(str(rid) for rid in run_ids)
+
+# Resolve remote IDs without colliding with other animals' batches/runs on remote_conn
+existing_remote_batches = []
+existing_remote_rids = []
+existing_remote_trids = []
+
+if batches:
+    b0 = batches[0]
+    existing_remote_batches = [
+        int(x)
+        for x in query_json(
+            remote_conn,
+            f"""
+            SELECT COALESCE(json_agg(batch_id ORDER BY batch_id), '[]'::json)
+            FROM "{remote_schema}".perffarm_batches
+            WHERE animal_name = {slit(b0["animal_name"])}
+              AND pg_branch = {slit(b0["pg_branch"])}
+              AND git_commit_sha = {slit(b0["git_commit_sha"])}
+              AND test_profile = {slit(b0["test_profile"])}
+              AND started_at = {slit(b0["started_at"])}::timestamptz;
+            """,
+        )
+        if x is not None
+    ]
+
+if existing_remote_batches:
+    eb_csv = ",".join(str(x) for x in existing_remote_batches)
+    existing_remote_rids.extend(
+        int(x)
+        for x in query_json(
+            remote_conn,
+            f"""
+            SELECT COALESCE(json_agg(pgbench_run_id ORDER BY test_run_id), '[]'::json)
+            FROM "{remote_schema}".perffarm_test_runs
+            WHERE batch_id IN ({eb_csv}) AND pgbench_run_id IS NOT NULL;
+            """,
+        )
+        if x is not None
+    )
+    existing_remote_trids.extend(
+        int(x)
+        for x in query_json(
+            remote_conn,
+            f"""
+            SELECT COALESCE(json_agg(test_run_id ORDER BY test_run_id), '[]'::json)
+            FROM "{remote_schema}".perffarm_test_runs
+            WHERE batch_id IN ({eb_csv});
+            """,
+        )
+        if x is not None
+    )
+
+run_labels = [r["run_label"] for r in test_runs if r.get("run_label")]
+if run_labels:
+    lbl_csv = ",".join(slit(lbl) for lbl in run_labels)
+    for x in query_json(
+        remote_conn,
+        f"""
+        SELECT COALESCE(json_agg(run_id ORDER BY run_id), '[]'::json)
+        FROM "{remote_schema}".pgbench_runs
+        WHERE run_label IN ({lbl_csv});
+        """,
+    ):
+        if x is not None and int(x) not in existing_remote_rids:
+            existing_remote_rids.append(int(x))
+
+occupied_batch_ids = set(
+    int(x)
+    for x in query_json(
+        remote_conn,
+        f'SELECT COALESCE(json_agg(batch_id), \'[]\'::json) FROM "{remote_schema}".perffarm_batches;',
+    )
+    if x is not None
+) - set(existing_remote_batches)
+
+occupied_run_ids = set(
+    int(x)
+    for x in query_json(
+        remote_conn,
+        f'SELECT COALESCE(json_agg(run_id), \'[]\'::json) FROM "{remote_schema}".pgbench_runs;',
+    )
+    if x is not None
+) - set(existing_remote_rids)
+
+occupied_tr_ids = set(
+    int(x)
+    for x in query_json(
+        remote_conn,
+        f'SELECT COALESCE(json_agg(test_run_id), \'[]\'::json) FROM "{remote_schema}".perffarm_test_runs;',
+    )
+    if x is not None
+) - set(existing_remote_trids)
+
+if existing_remote_batches:
+    remote_batch_id = existing_remote_batches[0]
+elif batch_id not in occupied_batch_ids:
+    remote_batch_id = batch_id
+else:
+    remote_batch_id = max(occupied_batch_ids) + 1
+occupied_batch_ids.add(remote_batch_id)
+
+rid_map = {}
+if len(existing_remote_rids) == len(run_ids):
+    for local_rid, rem_rid in zip(run_ids, existing_remote_rids):
+        rid_map[local_rid] = rem_rid
+        occupied_run_ids.add(rem_rid)
+else:
+    for local_rid in run_ids:
+        if local_rid not in occupied_run_ids:
+            rid_map[local_rid] = local_rid
+            occupied_run_ids.add(local_rid)
+        else:
+            new_rid = (max(occupied_run_ids) if occupied_run_ids else 0) + 1
+            rid_map[local_rid] = new_rid
+            occupied_run_ids.add(new_rid)
+
+tr_map = {}
+local_trids = [int(tr["test_run_id"]) for tr in test_runs]
+if len(existing_remote_trids) == len(local_trids):
+    for l_trid, r_trid in zip(local_trids, existing_remote_trids):
+        tr_map[l_trid] = r_trid
+        occupied_tr_ids.add(r_trid)
+else:
+    for l_trid in local_trids:
+        if l_trid not in occupied_tr_ids:
+            tr_map[l_trid] = l_trid
+            occupied_tr_ids.add(l_trid)
+        else:
+            new_trid = (max(occupied_tr_ids) if occupied_tr_ids else 0) + 1
+            tr_map[l_trid] = new_trid
+            occupied_tr_ids.add(new_trid)
 
 sql_parts = [f'SET search_path TO "{remote_schema}", public, pg_catalog;', "BEGIN;"]
 
@@ -240,9 +376,19 @@ ON CONFLICT (animal_name) DO UPDATE SET
     updated_at = EXCLUDED.updated_at;
 """)
 
+del_batch_ids = sorted(set(existing_remote_batches) | {remote_batch_id})
+del_batch_csv = ",".join(str(x) for x in del_batch_ids)
+del_run_ids = sorted(set(existing_remote_rids) | set(rid_map.values()))
+del_run_csv = ",".join(str(x) for x in del_run_ids)
+
+if del_batch_csv:
+    sql_parts.append(f"DELETE FROM perffarm_test_runs WHERE batch_id IN ({del_batch_csv});")
+
 if batches:
+    for b in batches:
+        b["batch_id"] = remote_batch_id
     sql_parts.append(f"""
-DELETE FROM perffarm_batches WHERE batch_id = {batch_id};
+DELETE FROM perffarm_batches WHERE batch_id IN ({del_batch_csv});
 INSERT INTO perffarm_batches
 SELECT * FROM jsonb_populate_recordset(NULL::perffarm_batches, {jlit(batches)});
 """)
@@ -252,8 +398,16 @@ if run_ids_csv:
         local_conn,
         f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY run_id), \'[]\'::json) FROM "{local_schema}".pgbench_runs t WHERE run_id IN ({run_ids_csv});',
     )
-    sql_parts.append(f"DELETE FROM pgbench_runs WHERE run_id IN ({run_ids_csv});")
+    if del_run_csv:
+        sql_parts.append(f"""
+DELETE FROM pgbench_progress_log WHERE run_id IN ({del_run_csv});
+DELETE FROM pgbench_agg_log WHERE run_id IN ({del_run_csv});
+DELETE FROM pgbench_tx_log WHERE run_id IN ({del_run_csv});
+DELETE FROM pgbench_runs WHERE run_id IN ({del_run_csv});
+""")
     if pgb_runs:
+        for r in pgb_runs:
+            r["run_id"] = rid_map[int(r["run_id"])]
         sql_parts.append(f"""
 INSERT INTO pgbench_runs
 SELECT * FROM jsonb_populate_recordset(NULL::pgbench_runs, {jlit(pgb_runs)});
@@ -276,14 +430,20 @@ SELECT * FROM jsonb_populate_recordset(NULL::pgbench_runs, {jlit(pgb_runs)});
             f'SELECT COALESCE(json_agg(row_to_json(t)), \'[]\'::json) FROM "{local_schema}".{tbl} t WHERE run_id IN ({run_ids_csv});',
         )
         if rows:
+            for r in rows:
+                r["run_id"] = rid_map[int(r["run_id"])]
             sql_parts.append(f"""
 INSERT INTO {tbl}
 SELECT * FROM jsonb_populate_recordset(NULL::{tbl}, {jlit(rows)});
 """)
 
 if test_runs:
+    for tr in test_runs:
+        tr["test_run_id"] = tr_map[int(tr["test_run_id"])]
+        tr["batch_id"] = remote_batch_id
+        if tr.get("pgbench_run_id") is not None:
+            tr["pgbench_run_id"] = rid_map[int(tr["pgbench_run_id"])]
     sql_parts.append(f"""
-DELETE FROM perffarm_test_runs WHERE batch_id = {batch_id};
 INSERT INTO perffarm_test_runs
 SELECT * FROM jsonb_populate_recordset(NULL::perffarm_test_runs, {jlit(test_runs)});
 """)

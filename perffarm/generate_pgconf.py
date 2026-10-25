@@ -175,6 +175,11 @@ def main() -> int:
         help="Optional path to pg_config to check whether pg_stat_statements is installed",
     )
     parser.add_argument(
+        "--configure-flags",
+        default=os.environ.get("CONFIGURE_FLAGS", ""),
+        help="Optional configure flags string (checked for --with-lz4)",
+    )
+    parser.add_argument(
         "--extra-gucs",
         default=os.environ.get("PG_EXTRA_GUCS", ""),
         help="Semicolon- or comma-separated extra GUC key=value overrides",
@@ -215,25 +220,40 @@ def main() -> int:
     eff_io_conc = "200" if is_ssd else "2"
     maint_io_conc_line = f"maintenance_io_concurrency = {eff_io_conc}" if args.pg_version >= 13 else ""
     track_wal_line = "track_wal_io_timing = on" if args.pg_version >= 15 else "# track_wal_io_timing not supported on PG < 15"
-    wal_compression = "lz4" if (args.pg_version >= 15 and "--with-lz4" in os.environ.get("CONFIGURE_FLAGS", "")) else "on"
     huge_pages = "try" if hugepages_total > 0 else "try"
 
+    cfg_flags_combined = args.configure_flags or ""
+    if args.hardware_profile:
+        eff_cfg_file = Path(args.hardware_profile).resolve().parent / "effective_configure_flags.txt"
+        if eff_cfg_file.exists():
+            try:
+                cfg_flags_combined += " " + eff_cfg_file.read_text(encoding="utf-8")
+            except Exception:
+                pass
+
     use_pgss = args.enable_pg_stat_statements
-    if use_pgss and args.pg_config:
+    if args.pg_config:
         import shutil
         import subprocess
         pg_cfg_bin = shutil.which(args.pg_config)
         if pg_cfg_bin:
             try:
-                pkglibdir = subprocess.check_output([pg_cfg_bin, "--pkglibdir"], text=True).strip()
-                has_lib = any(
-                    os.path.exists(os.path.join(pkglibdir, name))
-                    for name in ("pg_stat_statements.so", "pg_stat_statements.dylib", "pg_stat_statements.dll")
-                )
-                if not has_lib:
-                    use_pgss = False
+                cfg_flags_combined += " " + subprocess.check_output([pg_cfg_bin, "--configure"], text=True).strip()
             except Exception:
                 pass
+            if use_pgss:
+                try:
+                    pkglibdir = subprocess.check_output([pg_cfg_bin, "--pkglibdir"], text=True).strip()
+                    has_lib = any(
+                        os.path.exists(os.path.join(pkglibdir, name))
+                        for name in ("pg_stat_statements.so", "pg_stat_statements.dylib", "pg_stat_statements.dll")
+                    )
+                    if not has_lib:
+                        use_pgss = False
+                except Exception:
+                    pass
+
+    wal_compression = "lz4" if (args.pg_version >= 15 and "--with-lz4" in cfg_flags_combined) else "on"
 
     if use_pgss:
         spl_line = "shared_preload_libraries = 'pg_stat_statements'"

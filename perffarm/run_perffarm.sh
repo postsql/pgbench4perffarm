@@ -307,14 +307,31 @@ if [[ -z "$COMMIT_OVERRIDE" && ( -n "$COMMITS_LIST_OVERRIDE" || -n "$COMMITS_FIL
     log_info "Multi-commit run configured (${#COMMIT_LIST[@]} commits); executing sequentially..."
     MULTI_COMMIT_RC=0
     COMMIT_IDX=0
+    COMMITS_SUCCEEDED=0
+    COMMITS_FAILED=0
+    FAILED_SHAS=()
     for sha in "${COMMIT_LIST[@]}"; do
         COMMIT_IDX=$((COMMIT_IDX + 1))
         log_info "=== Multi-commit progress: [${COMMIT_IDX}/${#COMMIT_LIST[@]}] commit ${sha:0:12} ==="
-        AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --commit="$sha" --skip-setup || MULTI_COMMIT_RC=$?
+        if AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --commit="$sha" --skip-setup; then
+            COMMITS_SUCCEEDED=$((COMMITS_SUCCEEDED + 1))
+        else
+            rc=$?
+            MULTI_COMMIT_RC="$rc"
+            COMMITS_FAILED=$((COMMITS_FAILED + 1))
+            FAILED_SHAS+=("${sha:0:12}")
+            log_info "WARNING: Commit ${sha:0:12} failed with exit code $rc"
+        fi
     done
     if [[ "${AUTO_TEARDOWN:-false}" == "true" ]]; then
         bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" teardown
     fi
+    log_info "=================================================================="
+    log_info "Multi-commit sweep complete: ${COMMITS_SUCCEEDED}/${#COMMIT_LIST[@]} succeeded, ${COMMITS_FAILED} failed."
+    if [[ ${#FAILED_SHAS[@]} -gt 0 ]]; then
+        log_info "Failed commits: ${FAILED_SHAS[*]}"
+    fi
+    log_info "=================================================================="
     exit "$MULTI_COMMIT_RC"
 fi
 
@@ -384,13 +401,19 @@ else
                 git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || \
                 git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || true
         fi
-        git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1
+        if ! git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1; then
+            echo "[run_perffarm] ERROR: Failed to check out commit '$COMMIT_OVERRIDE' in $PG_SRC_DIR" >&2
+            exit 1
+        fi
     else
         log_info "Checking out latest PostgreSQL branch '$FIRST_BRANCH' from $PG_GIT_URL..."
         git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
             git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1
-        git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
-            git -C "$PG_SRC_DIR" checkout -f FETCH_HEAD >/dev/null 2>&1
+        if ! (git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
+              git -C "$PG_SRC_DIR" checkout -f FETCH_HEAD >/dev/null 2>&1); then
+            echo "[run_perffarm] ERROR: Failed to check out branch '$FIRST_BRANCH' in $PG_SRC_DIR" >&2
+            exit 1
+        fi
     fi
     HAS_GIT_CHECKOUT=true
     GIT_SHA="$(git -C "$PG_SRC_DIR" rev-parse HEAD)"
@@ -421,37 +444,43 @@ head_sha, mode, fallback_str, pg_src_dir, has_git_str = sys.argv[1:6]
 max_fallback = max(0, int(fallback_str or 0))
 has_git = has_git_str == "true"
 
+gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+if not gh_token:
+    try:
+        tok_res = subprocess.run(
+            ["gh", "auth", "token"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if tok_res.returncode == 0 and tok_res.stdout.strip():
+            gh_token = tok_res.stdout.strip()
+    except Exception:
+        pass
+
 def check_commit_ci(sha: str) -> str:
     headers = {
         "User-Agent": "pgbench4perffarm/1.0",
         "Accept": "application/vnd.github+json",
     }
-    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if gh_token:
         headers["Authorization"] = f"Bearer {gh_token}"
-    status_state = "unknown"
-    try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/postgres/postgres/commits/{sha}/status",
-            headers=headers,
-        )
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if data.get("total_count", 0) > 0:
-                status_state = data.get("state", "unknown")
-    except Exception:
-        return "local_or_unverified"
 
     checks_state = "unknown"
+    any_api_ok = False
+    has_check_runs = False
     try:
         req2 = urllib.request.Request(
             f"https://api.github.com/repos/postgres/postgres/commits/{sha}/check-runs",
             headers=headers,
         )
         with urllib.request.urlopen(req2, timeout=5) as resp2:
+            any_api_ok = True
             cdata = json.loads(resp2.read().decode("utf-8"))
             runs = cdata.get("check_runs", [])
             if runs:
+                has_check_runs = True
                 conclusions = [r.get("conclusion") for r in runs if r.get("status") == "completed"]
                 if any(c in ("failure", "timed_out", "cancelled", "action_required") for c in conclusions):
                     checks_state = "failure"
@@ -462,6 +491,23 @@ def check_commit_ci(sha: str) -> str:
     except Exception:
         pass
 
+    status_state = "unknown"
+    if not has_check_runs:
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/postgres/postgres/commits/{sha}/status",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                any_api_ok = True
+                data = json.loads(resp.read().decode("utf-8"))
+                if data.get("total_count", 0) > 0:
+                    status_state = data.get("state", "unknown")
+        except Exception:
+            pass
+
+    if not any_api_ok:
+        return "local_or_unverified"
     if status_state == "failure" or checks_state == "failure":
         return "github_failure"
     if status_state == "success" or checks_state == "success":
@@ -579,12 +625,56 @@ if [[ "${USE_CCACHE:-auto}" == "true" || "${USE_CCACHE:-auto}" == "auto" ]]; the
     fi
 fi
 
+record_failed_build_and_exit() {
+    local fail_stage="$1"
+    local fail_log="$2"
+    local b_dur=$(( $(date +%s) - BUILD_START_TS ))
+    echo "[run_perffarm] ERROR: Build failed during $fail_stage for commit ${GIT_SHA:0:12} (see $fail_log)" >&2
+    if [[ -f "$fail_log" ]]; then
+        tail -n 20 "$fail_log" >&2 || true
+    fi
+    python3 - "$METRICS_PSQL" "$METRICS_DB_CONNINFO" "$METRICS_DB_SCHEMA" \
+        "$ANIMAL_NAME" "$TOPOLOGY" "$TEST_PROFILE" "$METRICS_LEVEL" "$FIRST_BRANCH" \
+        "$GIT_SHA" "$GIT_TS" "$GIT_SUBJECT" "$CI_STATUS" "$EFFECTIVE_CFG_FLAGS" "${CFLAGS:-}" \
+        "$b_dur" "$STATE_DIR/server_instance_info.json" "$STATE_DIR/client_instance_info.json" <<'PY' || true
+import json, os, subprocess, sys
+(psql_bin, conninfo, schema, animal, topology, profile, mlevel, branch,
+ sha, commit_ts, subject, ci_status, cfg_flags, cflags, b_dur, srv_path, cli_path) = sys.argv[1:18]
+srv = json.loads(open(srv_path, encoding="utf-8").read()) if os.path.exists(srv_path) else {}
+cli = json.loads(open(cli_path, encoding="utf-8").read()) if os.path.exists(cli_path) else {}
+def lit(v):
+    return "NULL" if (v is None or v == "") else "'" + str(v).replace("'", "''") + "'"
+def jb(o):
+    return "'" + json.dumps(o).replace("'", "''") + "'::jsonb"
+sql = f"""
+SET search_path TO "{schema}", public, pg_catalog;
+INSERT INTO perffarm_batches (
+    animal_name, topology, test_profile, metrics_level,
+    pg_branch, pg_version_num, git_commit_sha, git_commit_ts, git_commit_subject,
+    ci_status, configure_flags, cflags,
+    build_status, build_duration_sec, check_world_status, check_world_duration_sec,
+    server_instance_info, client_instance_info, tests_planned, tests_failed, status, ended_at
+) VALUES (
+    {lit(animal)}, {lit(topology)}, {lit(profile)}, {lit(mlevel)},
+    {lit(branch)}, 200000, {lit(sha)}, {lit(commit_ts)}::timestamptz, {lit(subject)},
+    {lit(ci_status)}, {lit(cfg_flags)}, {lit(cflags)},
+    'failed', {float(b_dur)}, 'skipped', 0,
+    {jb(srv)}, {jb(cli)}, 0, 0, 'build_failed', clock_timestamp()
+);
+"""
+subprocess.run([psql_bin, "-X", "-q", "-d", conninfo, "-c", sql], check=False)
+PY
+    exit 1
+}
+
 if [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1 && [[ -z "$COMMIT_OVERRIDE" ]]; then
     TARGET_PG_CONFIG="$(command -v "$PREBUILT_PG_CONFIG")"
     BUILD_STATUS="prebuilt"
 else
     log_info "Configuring and building PostgreSQL in $PG_SRC_DIR (CC='$EFFECTIVE_CC', jobs=$BUILD_JOBS)..."
+    set +e
     (
+        set -e
         cd "$PG_SRC_DIR"
         CFG_INPUT_HASH="$(sha256sum configure configure.ac src/include/pg_config.h.in 2>/dev/null | sha256sum | awk '{print $1}')"
         CFG_SIG="${EFFECTIVE_CC}|${CFLAGS:--O2 -g -fno-omit-frame-pointer}|${EFFECTIVE_CFG_FLAGS}|${CFG_INPUT_HASH}"
@@ -613,14 +703,21 @@ else
             make -C contrib/pg_stat_statements -j"$BUILD_JOBS" install >>"$LOG_DIR/pg_install.log" 2>&1 || true
         fi
     )
+    PG_BUILD_RC=$?
+    set -e
+    if [[ $PG_BUILD_RC -ne 0 ]]; then
+        record_failed_build_and_exit "PostgreSQL build/install" "$LOG_DIR/pg_build.log"
+    fi
     TARGET_PG_CONFIG="$WORKDIR/install/bin/pg_config"
     BUILD_STATUS="passed"
 fi
 
 log_info "Building and installing pgbench4perffarm (contrib/pgbench + src/bin/pgbench) against $TARGET_PG_CONFIG..."
 make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" clean >"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 || true
-make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" all >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
-make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
+if ! (make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" all >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 && \
+      make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1); then
+    record_failed_build_and_exit "pgbench4perffarm build/install" "$LOG_DIR/pgbench4perffarm_build.log"
+fi
 
 if [[ "${BUILD_PGVECTOR:-false}" == "true" ]]; then
     PGVEC_DIR="$WORKDIR/src/pgvector"
@@ -680,6 +777,21 @@ stop_local_check_server() {
     rm -rf "$CHECK_PGDATA" "$CHECK_PGWAL"
 }
 
+verify_check_server_log() {
+    local clog="$1"
+    python3 - "$SCRIPT_DIR" "$clog" <<'PY'
+import sys
+script_dir, log_path = sys.argv[1:3]
+sys.path.insert(0, script_dir)
+import verify_test_run as v
+res = v.inspect_server_log(log_path)
+if not res.get("clean", True):
+    for line in res.get("severe_error_lines", []):
+        sys.stderr.write(f"[check_server.log] {line}\n")
+    sys.exit(1)
+PY
+}
+
 if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     log_info "Running full 'make check-world' and pgbench4perffarm verification..."
     CW_OK=true
@@ -688,6 +800,7 @@ if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     fi
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
+    rm -f "$LOG_DIR/check_server.log"
     "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
     {
         echo "port = $CHECK_PGPORT"
@@ -697,12 +810,14 @@ if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     stop_local_check_server
+    verify_check_server_log "$LOG_DIR/check_server.log" || CW_OK=false
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
 elif [[ "$CHECK_WORLD_MODE" == "fast" ]]; then
     log_info "Running fast verification (contrib/pgbench SQL regression + pgbench TAP check)..."
     CW_OK=true
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
+    rm -f "$LOG_DIR/check_server.log"
     "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
     {
         echo "port = $CHECK_PGPORT"
@@ -712,6 +827,7 @@ elif [[ "$CHECK_WORLD_MODE" == "fast" ]]; then
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
     PROVE_TESTS="t/002_pgbench_no_server.pl" make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" installcheck >>"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
     stop_local_check_server
+    verify_check_server_log "$LOG_DIR/check_server.log" || CW_OK=false
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
     log_info "Fast verification status: $CHECK_WORLD_STATUS"
 fi
@@ -1360,4 +1476,7 @@ log_info "Perffarm Batch $BATCH_ID Complete! Status: $FINAL_BATCH_STATUS"
 log_info "  Passed: $TESTS_PASSED | Failed: $TESTS_FAILED | Skipped: $TESTS_SKIPPED"
 log_info "  Batch Artifacts: $BATCH_DIR"
 log_info "=================================================================="
+if [[ "$TESTS_FAILED" -gt 0 || "$FINAL_BATCH_STATUS" == "failed" ]]; then
+    exit 1
+fi
 exit 0

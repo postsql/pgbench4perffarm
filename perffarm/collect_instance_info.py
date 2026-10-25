@@ -91,15 +91,32 @@ def collect_cpu_info() -> dict:
                         freq_max = val
                 except Exception:
                     pass
-    else:
+
+    if model_name == "Unknown CPU" or freq_cur is None:
         try:
             with open("/proc/cpuinfo", "r", encoding="utf-8", errors="replace") as f:
                 for line in f:
-                    if line.lower().startswith("model name") and ":" in line:
+                    low = line.lower()
+                    if model_name == "Unknown CPU" and low.startswith("model name") and ":" in line:
                         model_name = line.split(":", 1)[1].strip()
+                    elif freq_cur is None and low.startswith("cpu mhz") and ":" in line:
+                        try:
+                            freq_cur = round(float(line.split(":", 1)[1].strip().split()[0]), 2)
+                        except Exception:
+                            pass
+                    if model_name != "Unknown CPU" and freq_cur is not None:
                         break
         except Exception:
             pass
+
+    if freq_cur is None:
+        cur_khz = read_file_first_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        if cur_khz.isdigit():
+            freq_cur = round(int(cur_khz) / 1000.0, 2)
+    if freq_max is None:
+        max_khz = read_file_first_line("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq")
+        if max_khz.isdigit():
+            freq_max = round(int(max_khz) / 1000.0, 2)
 
     physical_cores = sockets * cores_per_socket
     if physical_cores > logical_cpus:

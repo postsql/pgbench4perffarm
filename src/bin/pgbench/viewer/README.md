@@ -44,7 +44,7 @@ A zero-dependency web application (`pgbench_viewer.py`) built with [`bottle.py`]
 | `html/compare_matrix.html.stpl` | Runtime | Section 4: Multi-Run Matrix Comparison table & WASM bar chart (`pgbench_compare_runs(bigint[])`). |
 | `html/single_run.html.stpl` | Runtime | Section 5: Selected Run KPI cards, 3-chart WASM grid, `pgbench_show_run()` breakdown, and `pgbench_run_commands` profile. |
 | `html/explorer_body.html.stpl` | Runtime | Phase 2: SQL Data Explorer form, presets bar, WASM chart partial, and Stage-2 `stpl` source inspector. |
-| `html/explorer_table_meta.html.stpl` | Runtime | Phase 2: Stage-1 Bottle metatemplate (`<@ @> @ {| |}`) that synthesizes the Stage-2 `SimpleTemplate` table template per column descriptor. |
+| `html/explorer_table_meta.html.stpl` | Runtime | Phase 2: Stage-1 Bottle metatemplate (`<@ @> @ {\| \|}`) that synthesizes the Stage-2 `SimpleTemplate` table template per column descriptor. |
 | `html/wasm_chart_box.html.stpl` | Runtime | Reusable WASM SVG chart container partial (`% include` target across Single-Run, Matrix, and Explorer views). |
 | `html/wasm_chart_module.html.stpl` | Runtime | WASM module loader (`PGBENCH_WASM_B64` inline instantiation + `/static/pgbench_chart.wasm` streaming fallback) and SVG line/bar chart projectors. |
 | `css/water.css` | Runtime | Classless semantic `Water.css` v2 core stylesheet (light/dark adaptive variables & element rules). |
@@ -126,7 +126,7 @@ python3 src/bin/pgbench/viewer/src/build_wasm.py --verify
 
 | Route | Description |
 | :--- | :--- |
-| `GET /explorer`, `POST /explorer` | Interactive SQL Data Explorer with 6 curated SQL presets, custom read-only `SELECT`/`WITH` execution, 2-stage `explorer_table_meta.html.stpl` $\rightarrow$ `bottle.SimpleTemplate` synthesis, inspectable Stage-2 `stpl` source, and automatic WASM bar chart plotting. |
+| `GET /explorer`, `POST /explorer` | Interactive SQL Data Explorer with 6 curated SQL presets, custom read-only `SELECT`/`WITH` execution, 2-stage `explorer_table_meta.html.stpl` → `bottle.SimpleTemplate` synthesis, inspectable Stage-2 `stpl` source, and automatic WASM bar chart plotting. |
 | `GET /api/explorer?sql=...` | Executes the read-only SQL query and returns the JSON result envelope (`{schema, generated_at, row_count, rows, columns, generated_stpl}`). |
 | `GET /static/water.css` | Serves `css/water.css` (`text/css`). |
 | `GET /static/viewer.css` | Serves `css/viewer.css` (`text/css`). |

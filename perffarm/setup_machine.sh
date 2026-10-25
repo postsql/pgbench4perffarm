@@ -134,6 +134,16 @@ if [[ "$TUNE_OS" == "true" ]]; then
     sudo sysctl -w vm.dirty_background_ratio=3 >/dev/null || true
     sudo sysctl -w vm.dirty_ratio=10 >/dev/null || true
     sudo sysctl -w kernel.sched_autogroup_enabled=0 >/dev/null || true
+    if [[ -n "${HUGEPAGES_NR:-}" ]]; then
+        sudo sysctl -w "vm.nr_hugepages=${HUGEPAGES_NR}" >/dev/null || true
+    elif [[ -r /proc/meminfo ]]; then
+        MEM_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+        if [[ -n "$MEM_KB" && "$MEM_KB" -gt 0 ]]; then
+            # Reserve ~28% of RAM in 2 MB HugePages to accommodate shared_buffers (25% of RAM)
+            HP_NR=$(( (MEM_KB * 28 / 100) / 2048 + 64 ))
+            sudo sysctl -w "vm.nr_hugepages=${HP_NR}" >/dev/null || true
+        fi
+    fi
     if [[ -d /sys/devices/system/cpu/cpu0/cpufreq ]]; then
         for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
             [[ -w "$gov" ]] && echo performance | sudo tee "$gov" >/dev/null || true
@@ -191,6 +201,13 @@ fi
 # Auto-detect optional library flags if AUTO_DETECT_LIBS=true
 DETECTED_LIB_FLAGS=""
 if [[ "${AUTO_DETECT_LIBS:-true}" == "true" ]] && command -v pkg-config >/dev/null 2>&1; then
+    if [[ "${CONFIGURE_FLAGS:-}" != *"--with-icu"* && "${CONFIGURE_FLAGS:-}" != *"--without-icu"* ]]; then
+        if pkg-config --exists icu-uc icu-i18n 2>/dev/null; then
+            DETECTED_LIB_FLAGS+=" --with-icu"
+        else
+            DETECTED_LIB_FLAGS+=" --without-icu"
+        fi
+    fi
     pkg-config --exists openssl 2>/dev/null && DETECTED_LIB_FLAGS+=" --with-ssl=openssl"
     pkg-config --exists liblz4 2>/dev/null  && DETECTED_LIB_FLAGS+=" --with-lz4"
     pkg-config --exists libzstd 2>/dev/null && DETECTED_LIB_FLAGS+=" --with-zstd"

@@ -267,6 +267,607 @@ FROM pgbench_progress_log p
 JOIN pgbench_runs r ON r.run_id = p.run_id
 ORDER BY p.run_id DESC, p.elapsed_sec ASC;
 
+CREATE OR REPLACE FUNCTION pgbench_show_run(p_run_id bigint DEFAULT NULL)
+RETURNS TABLE (
+    section text,
+    scope   text,
+    metric  text,
+    value   text,
+    unit    text,
+    details text
+) LANGUAGE sql STABLE AS $func$
+WITH target_run AS (
+    SELECT r.*
+    FROM pgbench_runs r
+    WHERE r.run_id = COALESCE(p_run_id, (SELECT max(r2.run_id) FROM pgbench_runs r2))
+),
+all_rows AS (
+    SELECT 100 AS ord, '1. Run Info'::text AS section, 'run'::text AS scope,
+           'run_id'::text AS metric, r.run_id::text AS value, ''::text AS unit,
+           COALESCE('label=' || r.run_label, 'unlabeled') AS details
+    FROM target_run r
+    UNION ALL
+    SELECT 101, '1. Run Info', 'run', 'run_label', COALESCE(r.run_label, ''), '', ''
+    FROM target_run r
+    UNION ALL
+    SELECT 102, '1. Run Info', 'run', 'status', r.status, '',
+           'exit_code=' || COALESCE(r.exit_code::text, 'NULL')
+    FROM target_run r
+    UNION ALL
+    SELECT 103, '1. Run Info', 'run', 'target_db', COALESCE(r.target_db, ''), '',
+           'host=' || COALESCE(r.host, 'local') || ', scale=' || COALESCE(r.scale::text, '1')
+    FROM target_run r
+    UNION ALL
+    SELECT 104, '1. Run Info', 'run', 'concurrency',
+           COALESCE(r.clients::text, '0') || ' clients / ' || COALESCE(r.threads::text, '0') || ' threads',
+           '', 'started=' || r.started_at::text
+    FROM target_run r
+    UNION ALL
+    SELECT 105, '1. Run Info', 'run', 'duration_sec',
+           COALESCE(round(r.duration_sec::numeric, 4)::text, '0'), 's',
+           'ended=' || COALESCE(r.ended_at::text, 'running')
+    FROM target_run r
+    UNION ALL
+    SELECT 200, '2. Overall Metrics', 'overall', 'tps',
+           COALESCE(round(r.tps::numeric, 4)::text, '0'), 'tx/s',
+           'processed=' || COALESCE(r.transactions_cnt::text, '0')
+    FROM target_run r
+    UNION ALL
+    SELECT 201, '2. Overall Metrics', 'overall', 'transactions_cnt',
+           COALESCE(r.transactions_cnt::text, '0'), 'tx',
+           'failed=' || COALESCE(r.transactions_failed::text, '0') ||
+           ', expected_rollbacks=' || COALESCE(r.expected_rollbacks::text, '0') ||
+           ', skipped=' || COALESCE(r.transactions_skipped::text, '0')
+    FROM target_run r
+    UNION ALL
+    SELECT 202, '2. Overall Metrics', 'overall', 'latency_avg_ms',
+           COALESCE(round(r.latency_avg_ms::numeric, 3)::text, '0'), 'ms',
+           'stddev=' || COALESCE(round(r.latency_stddev_ms::numeric, 3)::text, '0') ||
+           ' ms, min=' || COALESCE(round(r.latency_min_ms::numeric, 3)::text, '0') ||
+           ' ms, max=' || COALESCE(round(r.latency_max_ms::numeric, 3)::text, '0') || ' ms'
+    FROM target_run r
+    UNION ALL
+    SELECT 203, '2. Overall Metrics', 'overall', 'latency_p50_ms',
+           COALESCE(round(r.latency_p50_ms::numeric, 3)::text, '0'), 'ms',
+           'p90=' || COALESCE(round(r.latency_p90_ms::numeric, 3)::text, '0') || ' ms'
+    FROM target_run r
+    UNION ALL
+    SELECT 204, '2. Overall Metrics', 'overall', 'latency_p95_ms',
+           COALESCE(round(r.latency_p95_ms::numeric, 3)::text, '0'), 'ms',
+           'p99=' || COALESCE(round(r.latency_p99_ms::numeric, 3)::text, '0') ||
+           ' ms, p99.9=' || COALESCE(round(r.latency_p99_9_ms::numeric, 3)::text, '0') || ' ms'
+    FROM target_run r
+    UNION ALL
+    SELECT 205, '2. Overall Metrics', 'overall', 'validation_pct',
+           COALESCE(round(r.validation_pct::numeric, 2)::text, '100.00'), '%',
+           'passed=' || COALESCE(r.validation_passed::text, '0') ||
+           ', failed=' || COALESCE(r.validation_failed::text, '0')
+    FROM target_run r
+    WHERE COALESCE(r.validation_passed, 0) + COALESCE(r.validation_failed, 0) > 0
+    UNION ALL
+    SELECT 206, '2. Overall Metrics', 'overall', 'sla_all_passed',
+           COALESCE(r.sla_all_passed::text, 'true'), '',
+           'dropped_log_rows=' || COALESCE(r.log_db_dropped_rows::text, '0')
+    FROM target_run r
+    UNION ALL
+    SELECT 300 + g.group_idx * 10 + 1, '3. Client Groups',
+           'group:' || g.group_name, 'tps',
+           COALESCE(round(g.tps::numeric, 4)::text, '0'), 'tx/s',
+           'clients=' || g.clients || ', threads=' || g.threads ||
+           ', seq=' || g.sequential || ', cnt=' || COALESCE(g.transactions_cnt, 0)
+    FROM pgbench_run_groups g
+    JOIN target_run r ON r.run_id = g.run_id
+    UNION ALL
+    SELECT 300 + g.group_idx * 10 + 2, '3. Client Groups',
+           'group:' || g.group_name, 'latency_p95_ms',
+           COALESCE(round(g.latency_p95_ms::numeric, 3)::text, '0'), 'ms',
+           'avg=' || COALESCE(round(g.latency_avg_ms::numeric, 3)::text, '0') ||
+           ' ms, p50=' || COALESCE(round(g.latency_p50_ms::numeric, 3)::text, '0') ||
+           ' ms, p99=' || COALESCE(round(g.latency_p99_ms::numeric, 3)::text, '0') || ' ms'
+    FROM pgbench_run_groups g
+    JOIN target_run r ON r.run_id = g.run_id
+    UNION ALL
+    SELECT 400 + s.script_idx * 10 + 1, '4. Scripts',
+           'script:' || s.script_name, 'tps',
+           COALESCE(round(s.tps::numeric, 4)::text, '0'), 'tx/s',
+           'weight=' || s.weight || ', cnt=' || COALESCE(s.transactions_cnt, 0) ||
+           ', failed=' || COALESCE(s.transactions_failed, 0)
+    FROM pgbench_run_scripts s
+    JOIN target_run r ON r.run_id = s.run_id
+    UNION ALL
+    SELECT 400 + s.script_idx * 10 + 2, '4. Scripts',
+           'script:' || s.script_name, 'latency_p95_ms',
+           COALESCE(round(s.latency_p95_ms::numeric, 3)::text, '0'), 'ms',
+           'avg=' || COALESCE(round(s.latency_avg_ms::numeric, 3)::text, '0') ||
+           ' ms, p50=' || COALESCE(round(s.latency_p50_ms::numeric, 3)::text, '0') ||
+           ' ms, p99=' || COALESCE(round(s.latency_p99_ms::numeric, 3)::text, '0') || ' ms'
+    FROM pgbench_run_scripts s
+    JOIN target_run r ON r.run_id = s.run_id
+    UNION ALL
+    SELECT 500, '5. Recall & Aging',
+           rec.scope || ':' || rec.metric_name, 'avg_recall',
+           COALESCE(round(rec.avg_recall::numeric, 4)::text, '0'), 'ratio',
+           'samples=' || COALESCE(rec.samples, 0) ||
+           ', p5=' || COALESCE(round(rec.p5_recall::numeric, 4)::text, '0') ||
+           ', p50=' || COALESCE(round(rec.p50_recall::numeric, 4)::text, '0') ||
+           CASE WHEN rec.initial_q1 IS NOT NULL THEN
+               ', q1=' || round(rec.initial_q1::numeric, 4)::text ||
+               ', q4=' || round(rec.mature_q4::numeric, 4)::text ||
+               ', deg_pct=' || round(rec.degradation_pct::numeric, 2)::text || '%'
+           ELSE '' END
+    FROM pgbench_run_recalls rec
+    JOIN target_run r ON r.run_id = rec.run_id
+    UNION ALL
+    SELECT 600 + c.script_idx * 100 + c.cmd_idx, '6. Commands',
+           'script#' || c.script_idx || ':cmd#' || c.cmd_idx, c.cmd_type,
+           COALESCE(round(c.latency_avg_ms::numeric, 3)::text, '0'), 'ms',
+           COALESCE(c.first_line, '') || ' (cnt=' || COALESCE(c.cnt, 0) ||
+           ', failed=' || COALESCE(c.failed, 0) || ', retries=' || COALESCE(c.retries, 0) || ')'
+    FROM pgbench_run_commands c
+    JOIN target_run r ON r.run_id = c.run_id
+    UNION ALL
+    SELECT 700 + sla.sla_idx, '7. SLA Verifications',
+           sla.target_scope, sla.raw_spec,
+           CASE WHEN sla.passed THEN 'PASS' ELSE 'FAIL' END, '',
+           'actual=' || COALESCE(round(sla.actual_val::numeric, 4)::text, '0') ||
+           ' ' || sla.op || ' threshold=' || COALESCE(round(sla.threshold_val::numeric, 4)::text, '0')
+    FROM pgbench_run_slas sla
+    JOIN target_run r ON r.run_id = sla.run_id
+)
+SELECT section, scope, metric, value, unit, details
+FROM all_rows
+ORDER BY ord, scope, metric;
+$func$;
+
+CREATE OR REPLACE FUNCTION pgbench_show_run(p_run_label text)
+RETURNS TABLE (
+    section text,
+    scope   text,
+    metric  text,
+    value   text,
+    unit    text,
+    details text
+) LANGUAGE sql STABLE AS $func$
+SELECT s.section, s.scope, s.metric, s.value, s.unit, s.details
+FROM pgbench_show_run(
+    (SELECT r.run_id FROM pgbench_runs r WHERE r.run_label = p_run_label ORDER BY r.run_id DESC LIMIT 1)
+) s
+WHERE EXISTS (SELECT 1 FROM pgbench_runs r WHERE r.run_label = p_run_label);
+$func$;
+
+CREATE OR REPLACE FUNCTION pgbench_compare_runs(p_base_run_id bigint, p_cand_run_id bigint)
+RETURNS TABLE (
+    scope      text,
+    metric     text,
+    unit       text,
+    base_val   double precision,
+    cand_val   double precision,
+    abs_delta  double precision,
+    pct_change double precision,
+    verdict    text
+) LANGUAGE sql STABLE AS $func$
+WITH base_r AS (
+    SELECT * FROM pgbench_runs WHERE run_id = p_base_run_id
+),
+cand_r AS (
+    SELECT * FROM pgbench_runs WHERE run_id = p_cand_run_id
+),
+pairs AS (
+    SELECT 10 AS ord, 'overall'::text AS scope, 'tps'::text AS metric, 'tx/s'::text AS unit,
+           true AS higher_better, b.tps AS base_val, c.tps AS cand_val
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 11, 'overall', 'latency_avg_ms', 'ms', false, b.latency_avg_ms, c.latency_avg_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 12, 'overall', 'latency_p50_ms', 'ms', false, b.latency_p50_ms, c.latency_p50_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 13, 'overall', 'latency_p90_ms', 'ms', false, b.latency_p90_ms, c.latency_p90_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 14, 'overall', 'latency_p95_ms', 'ms', false, b.latency_p95_ms, c.latency_p95_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 15, 'overall', 'latency_p99_ms', 'ms', false, b.latency_p99_ms, c.latency_p99_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 16, 'overall', 'latency_p99_9_ms', 'ms', false, b.latency_p99_9_ms, c.latency_p99_9_ms
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 17, 'overall', 'transactions_failed', 'tx', false,
+           b.transactions_failed::double precision, c.transactions_failed::double precision
+    FROM base_r b CROSS JOIN cand_r c
+    UNION ALL
+    SELECT 18, 'overall', 'ontime_pct', '%', true, b.ontime_pct, c.ontime_pct
+    FROM base_r b CROSS JOIN cand_r c
+    WHERE b.ontime_pct IS NOT NULL OR c.ontime_pct IS NOT NULL
+    UNION ALL
+    SELECT 19, 'overall', 'recall_avg', 'ratio', true, b.recall_avg, c.recall_avg
+    FROM base_r b CROSS JOIN cand_r c
+    WHERE COALESCE(b.recall_samples, 0) > 0 OR COALESCE(c.recall_samples, 0) > 0
+    UNION ALL
+    SELECT 20, 'overall', 'recall_p5', 'ratio', true, b.recall_p5, c.recall_p5
+    FROM base_r b CROSS JOIN cand_r c
+    WHERE COALESCE(b.recall_samples, 0) > 0 OR COALESCE(c.recall_samples, 0) > 0
+    UNION ALL
+    SELECT 21, 'overall', 'validation_pct', '%', true, b.validation_pct, c.validation_pct
+    FROM base_r b CROSS JOIN cand_r c
+    WHERE COALESCE(b.validation_passed, 0) + COALESCE(b.validation_failed, 0) > 0
+       OR COALESCE(c.validation_passed, 0) + COALESCE(c.validation_failed, 0) > 0
+    UNION ALL
+    SELECT 100, 'group:' || bg.group_name, 'tps', 'tx/s', true, bg.tps, cg.tps
+    FROM pgbench_run_groups bg
+    JOIN pgbench_run_groups cg ON bg.run_id = p_base_run_id AND cg.run_id = p_cand_run_id
+      AND bg.group_name = cg.group_name
+    UNION ALL
+    SELECT 101, 'group:' || bg.group_name, 'latency_avg_ms', 'ms', false, bg.latency_avg_ms, cg.latency_avg_ms
+    FROM pgbench_run_groups bg
+    JOIN pgbench_run_groups cg ON bg.run_id = p_base_run_id AND cg.run_id = p_cand_run_id
+      AND bg.group_name = cg.group_name
+    UNION ALL
+    SELECT 102, 'group:' || bg.group_name, 'latency_p95_ms', 'ms', false, bg.latency_p95_ms, cg.latency_p95_ms
+    FROM pgbench_run_groups bg
+    JOIN pgbench_run_groups cg ON bg.run_id = p_base_run_id AND cg.run_id = p_cand_run_id
+      AND bg.group_name = cg.group_name
+    UNION ALL
+    SELECT 200, 'script:' || bs.script_name, 'tps', 'tx/s', true, bs.tps, cs.tps
+    FROM pgbench_run_scripts bs
+    JOIN pgbench_run_scripts cs ON bs.run_id = p_base_run_id AND cs.run_id = p_cand_run_id
+      AND bs.script_name = cs.script_name
+    UNION ALL
+    SELECT 201, 'script:' || bs.script_name, 'latency_avg_ms', 'ms', false, bs.latency_avg_ms, cs.latency_avg_ms
+    FROM pgbench_run_scripts bs
+    JOIN pgbench_run_scripts cs ON bs.run_id = p_base_run_id AND cs.run_id = p_cand_run_id
+      AND bs.script_name = cs.script_name
+    UNION ALL
+    SELECT 202, 'script:' || bs.script_name, 'latency_p95_ms', 'ms', false, bs.latency_p95_ms, cs.latency_p95_ms
+    FROM pgbench_run_scripts bs
+    JOIN pgbench_run_scripts cs ON bs.run_id = p_base_run_id AND cs.run_id = p_cand_run_id
+      AND bs.script_name = cs.script_name
+    UNION ALL
+    SELECT 300, 'recall:' || br.scope || ':' || br.metric_name, 'avg_recall', 'ratio', true,
+           br.avg_recall, cr.avg_recall
+    FROM pgbench_run_recalls br
+    JOIN pgbench_run_recalls cr ON br.run_id = p_base_run_id AND cr.run_id = p_cand_run_id
+      AND br.scope = cr.scope AND br.metric_name = cr.metric_name
+    UNION ALL
+    SELECT 301, 'recall:' || br.scope || ':' || br.metric_name, 'p5_recall', 'ratio', true,
+           br.p5_recall, cr.p5_recall
+    FROM pgbench_run_recalls br
+    JOIN pgbench_run_recalls cr ON br.run_id = p_base_run_id AND cr.run_id = p_cand_run_id
+      AND br.scope = cr.scope AND br.metric_name = cr.metric_name
+)
+SELECT
+    p.scope,
+    p.metric,
+    p.unit,
+    p.base_val,
+    p.cand_val,
+    (p.cand_val - p.base_val) AS abs_delta,
+    CASE WHEN p.base_val IS NOT NULL AND abs(p.base_val) > 1e-12
+         THEN ((p.cand_val - p.base_val) / abs(p.base_val)) * 100.0
+         ELSE 0.0
+    END AS pct_change,
+    CASE
+        WHEN p.base_val IS NULL OR p.cand_val IS NULL THEN 'N/A'
+        WHEN abs(p.cand_val - p.base_val) <= 1e-9 THEN 'UNCHANGED'
+        WHEN abs(p.base_val) > 1e-12 AND abs(((p.cand_val - p.base_val) / abs(p.base_val)) * 100.0) < 1.0 THEN 'UNCHANGED'
+        WHEN p.higher_better AND p.cand_val > p.base_val THEN 'IMPROVED'
+        WHEN NOT p.higher_better AND p.cand_val < p.base_val THEN 'IMPROVED'
+        ELSE 'REGRESSED'
+    END AS verdict
+FROM pairs p
+ORDER BY p.ord, p.scope, p.metric;
+$func$;
+
+CREATE OR REPLACE FUNCTION pgbench_compare_runs(p_base_label text, p_cand_label text)
+RETURNS TABLE (
+    scope      text,
+    metric     text,
+    unit       text,
+    base_val   double precision,
+    cand_val   double precision,
+    abs_delta  double precision,
+    pct_change double precision,
+    verdict    text
+) LANGUAGE sql STABLE AS $func$
+SELECT c.*
+FROM pgbench_compare_runs(
+    (SELECT r.run_id FROM pgbench_runs r WHERE r.run_label = p_base_label ORDER BY r.run_id DESC LIMIT 1),
+    (SELECT r.run_id FROM pgbench_runs r WHERE r.run_label = p_cand_label ORDER BY r.run_id DESC LIMIT 1)
+) c;
+$func$;
+
+CREATE OR REPLACE FUNCTION pgbench_compare_runs(p_run_ids bigint[])
+RETURNS TABLE (
+    scope          text,
+    metric         text,
+    unit           text,
+    run_id         bigint,
+    run_label      text,
+    val            double precision,
+    delta_vs_base  double precision,
+    pct_vs_base    double precision,
+    sla_all_passed boolean
+) LANGUAGE sql STABLE AS $func$
+WITH run_list AS (
+    SELECT u.rid, u.ord AS run_ord
+    FROM unnest(p_run_ids) WITH ORDINALITY AS u(rid, ord)
+),
+metrics_per_run AS (
+    SELECT 10 AS m_ord, 'overall'::text AS scope, 'tps'::text AS metric, 'tx/s'::text AS unit,
+           r.run_id, r.run_label, rl.run_ord, r.tps AS val, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 11, 'overall', 'latency_avg_ms', 'ms', r.run_id, r.run_label, rl.run_ord,
+           r.latency_avg_ms, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 12, 'overall', 'latency_p50_ms', 'ms', r.run_id, r.run_label, rl.run_ord,
+           r.latency_p50_ms, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 13, 'overall', 'latency_p95_ms', 'ms', r.run_id, r.run_label, rl.run_ord,
+           r.latency_p95_ms, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 14, 'overall', 'latency_p99_ms', 'ms', r.run_id, r.run_label, rl.run_ord,
+           r.latency_p99_ms, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 15, 'overall', 'transactions_failed', 'tx', r.run_id, r.run_label, rl.run_ord,
+           r.transactions_failed::double precision, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    UNION ALL
+    SELECT 16, 'overall', 'recall_avg', 'ratio', r.run_id, r.run_label, rl.run_ord,
+           r.recall_avg, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    WHERE COALESCE(r.recall_samples, 0) > 0
+    UNION ALL
+    SELECT 100, 'group:' || g.group_name, 'tps', 'tx/s', r.run_id, r.run_label, rl.run_ord,
+           g.tps, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    JOIN pgbench_run_groups g ON g.run_id = r.run_id
+    UNION ALL
+    SELECT 101, 'group:' || g.group_name, 'latency_p95_ms', 'ms', r.run_id, r.run_label, rl.run_ord,
+           g.latency_p95_ms, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    JOIN pgbench_run_groups g ON g.run_id = r.run_id
+    UNION ALL
+    SELECT 200, 'script:' || s.script_name, 'tps', 'tx/s', r.run_id, r.run_label, rl.run_ord,
+           s.tps, r.sla_all_passed
+    FROM run_list rl JOIN pgbench_runs r ON r.run_id = rl.rid
+    JOIN pgbench_run_scripts s ON s.run_id = r.run_id
+)
+SELECT
+    m.scope,
+    m.metric,
+    m.unit,
+    m.run_id,
+    m.run_label,
+    m.val,
+    (m.val - b.val) AS delta_vs_base,
+    CASE WHEN b.val IS NOT NULL AND abs(b.val) > 1e-12
+         THEN ((m.val - b.val) / abs(b.val)) * 100.0
+         ELSE 0.0
+    END AS pct_vs_base,
+    m.sla_all_passed
+FROM metrics_per_run m
+LEFT JOIN metrics_per_run b
+  ON b.scope = m.scope AND b.metric = m.metric AND b.run_ord = 1
+ORDER BY m.m_ord, m.scope, m.metric, m.run_ord;
+$func$;
+
+CREATE OR REPLACE FUNCTION pgbench_viewer_payload_json(
+    p_mode text DEFAULT 'overview',
+    p_run_id bigint DEFAULT NULL,
+    p_base_run_id bigint DEFAULT NULL,
+    p_cand_run_id bigint DEFAULT NULL,
+    p_run_ids bigint[] DEFAULT NULL,
+    p_limit int DEFAULT 50
+) RETURNS jsonb
+LANGUAGE sql STABLE AS $func$
+WITH resolved_target AS (
+    SELECT COALESCE(
+        p_run_id,
+        CASE WHEN p_mode = 'live' THEN
+            (SELECT r.run_id FROM pgbench_runs r WHERE r.status = 'running' ORDER BY r.run_id DESC LIMIT 1)
+        ELSE NULL END,
+        (SELECT max(r.run_id) FROM pgbench_runs r)
+    ) AS run_id
+),
+runs_list AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(rv) ORDER BY rv.run_id DESC), '[]'::jsonb) AS data
+    FROM (
+        SELECT * FROM pgbench_runs_v ORDER BY run_id DESC LIMIT GREATEST(COALESCE(p_limit, 50), 1)
+    ) rv
+),
+active_list AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(ar) ORDER BY ar.run_id DESC), '[]'::jsonb) AS data
+    FROM (
+        SELECT
+            r.run_id,
+            r.run_label,
+            r.status,
+            r.started_at,
+            r.host,
+            r.target_db,
+            r.scale,
+            r.clients,
+            r.threads,
+            round(EXTRACT(EPOCH FROM (clock_timestamp() - r.started_at))::numeric, 1) AS live_elapsed_sec,
+            lp.elapsed_sec AS latest_progress_sec,
+            round(lp.tps::numeric, 2) AS latest_tps,
+            round(lp.latency_avg_ms::numeric, 3) AS latest_latency_avg_ms,
+            round(lp.latency_stddev_ms::numeric, 3) AS latest_latency_stddev_ms,
+            round(lp.lag_avg_ms::numeric, 3) AS latest_lag_avg_ms,
+            lp.failed_cnt AS latest_failed_cnt
+        FROM pgbench_runs r
+        LEFT JOIN LATERAL (
+            SELECT p.elapsed_sec, p.tps, p.latency_avg_ms, p.latency_stddev_ms, p.lag_avg_ms, p.failed_cnt
+            FROM pgbench_progress_log p
+            WHERE p.run_id = r.run_id
+            ORDER BY p.elapsed_sec DESC
+            LIMIT 1
+        ) lp ON true
+        WHERE r.status = 'running'
+    ) ar
+),
+sel_run AS (
+    SELECT to_jsonb(r) AS data
+    FROM pgbench_runs r
+    JOIN resolved_target rt ON rt.run_id = r.run_id
+),
+show_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(sr)), '[]'::jsonb) AS data
+    FROM resolved_target rt
+    CROSS JOIN LATERAL pgbench_show_run(rt.run_id) sr
+    WHERE rt.run_id IS NOT NULL
+),
+grp_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(g) ORDER BY g.group_idx), '[]'::jsonb) AS data
+    FROM pgbench_run_groups g
+    JOIN resolved_target rt ON rt.run_id = g.run_id
+),
+scr_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(s) ORDER BY s.script_idx), '[]'::jsonb) AS data
+    FROM pgbench_run_scripts s
+    JOIN resolved_target rt ON rt.run_id = s.run_id
+),
+cmd_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(c) ORDER BY c.script_idx, c.cmd_idx), '[]'::jsonb) AS data
+    FROM pgbench_run_commands c
+    JOIN resolved_target rt ON rt.run_id = c.run_id
+),
+rec_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(rc) ORDER BY rc.scope, rc.metric_name), '[]'::jsonb) AS data
+    FROM pgbench_run_recalls rc
+    JOIN resolved_target rt ON rt.run_id = rc.run_id
+),
+sla_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(sl) ORDER BY sl.sla_idx), '[]'::jsonb) AS data
+    FROM pgbench_run_slas sl
+    JOIN resolved_target rt ON rt.run_id = sl.run_id
+),
+prog_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(pl) ORDER BY pl.elapsed_sec ASC), '[]'::jsonb) AS data
+    FROM pgbench_progress_log pl
+    JOIN resolved_target rt ON rt.run_id = pl.run_id
+),
+agg_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(ag) ORDER BY ag.interval_start_sec ASC), '[]'::jsonb) AS data
+    FROM (
+        SELECT
+            a.interval_start_sec,
+            min(a.interval_start_sec) OVER () AS first_sec,
+            (a.interval_start_sec - min(a.interval_start_sec) OVER ()) AS elapsed_sec,
+            sum(a.cnt)::bigint AS cnt,
+            CASE WHEN sum(a.cnt) > 0 THEN (sum(a.latency_sum_us) / sum(a.cnt)) / 1000.0 ELSE 0.0 END AS latency_avg_ms,
+            max(a.latency_max_us) / 1000.0 AS latency_max_ms,
+            CASE WHEN sum(a.cnt) > 0 THEN (sum(a.lag_sum_us) / sum(a.cnt)) / 1000.0 ELSE 0.0 END AS lag_avg_ms,
+            sum(a.serialization_failures + a.deadlock_failures + a.other_sql_failures)::bigint AS failed_cnt,
+            CASE WHEN sum(a.recall_samples) > 0 THEN sum(a.recall_sum) / sum(a.recall_samples) ELSE NULL END AS recall_avg
+        FROM pgbench_agg_log a
+        JOIN resolved_target rt ON rt.run_id = a.run_id
+        GROUP BY a.interval_start_sec
+        ORDER BY a.interval_start_sec ASC
+    ) ag
+),
+tx_rows AS (
+    SELECT COALESCE(jsonb_agg(to_jsonb(txb) ORDER BY txb.bucket_sec ASC), '[]'::jsonb) AS data
+    FROM (
+        SELECT
+            (t.ts_usec / 1000000)::bigint AS bucket_sec,
+            ((t.ts_usec / 1000000)::bigint - min((t.ts_usec / 1000000)::bigint) OVER ()) AS elapsed_sec,
+            count(*) FILTER (WHERE t.status = 'ok')::bigint AS ok_cnt,
+            count(*) FILTER (WHERE t.status <> 'ok')::bigint AS err_cnt,
+            COALESCE(avg(t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0, 0.0) AS latency_avg_ms,
+            COALESCE(max(t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0, 0.0) AS latency_max_ms,
+            avg(t.recall) FILTER (WHERE t.recall IS NOT NULL) AS recall_avg
+        FROM pgbench_tx_log t
+        JOIN resolved_target rt ON rt.run_id = t.run_id
+        GROUP BY (t.ts_usec / 1000000)::bigint
+        ORDER BY bucket_sec DESC
+        LIMIT 120
+    ) txb
+),
+live_tx_pcts AS (
+    SELECT to_jsonb(lt) AS data
+    FROM (
+        SELECT
+            count(*) FILTER (WHERE t.status = 'ok')::bigint AS tx_ok_cnt,
+            count(*) FILTER (WHERE t.status <> 'ok')::bigint AS tx_err_cnt,
+            round((avg(t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS avg_ms,
+            round((percentile_cont(0.50) WITHIN GROUP (ORDER BY t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS p50_ms,
+            round((percentile_cont(0.90) WITHIN GROUP (ORDER BY t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS p90_ms,
+            round((percentile_cont(0.95) WITHIN GROUP (ORDER BY t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS p95_ms,
+            round((percentile_cont(0.99) WITHIN GROUP (ORDER BY t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS p99_ms,
+            round((percentile_cont(0.999) WITHIN GROUP (ORDER BY t.latency_us) FILTER (WHERE t.status = 'ok') / 1000.0)::numeric, 3) AS p99_9_ms,
+            round((avg(t.recall) FILTER (WHERE t.recall IS NOT NULL))::numeric, 4) AS recall_avg
+        FROM pgbench_tx_log t
+        JOIN resolved_target rt ON rt.run_id = t.run_id
+    ) lt
+),
+pair_diff AS (
+    SELECT CASE WHEN p_base_run_id IS NOT NULL AND p_cand_run_id IS NOT NULL THEN
+        jsonb_build_object(
+            'base_run', (SELECT to_jsonb(r) FROM pgbench_runs r WHERE r.run_id = p_base_run_id),
+            'cand_run', (SELECT to_jsonb(r) FROM pgbench_runs r WHERE r.run_id = p_cand_run_id),
+            'diff_rows', COALESCE((
+                SELECT jsonb_agg(to_jsonb(c))
+                FROM pgbench_compare_runs(p_base_run_id, p_cand_run_id) c
+            ), '[]'::jsonb),
+            'base_progress', COALESCE((
+                SELECT jsonb_agg(to_jsonb(pl) ORDER BY pl.elapsed_sec ASC)
+                FROM pgbench_progress_log pl WHERE pl.run_id = p_base_run_id
+            ), '[]'::jsonb),
+            'cand_progress', COALESCE((
+                SELECT jsonb_agg(to_jsonb(pl) ORDER BY pl.elapsed_sec ASC)
+                FROM pgbench_progress_log pl WHERE pl.run_id = p_cand_run_id
+            ), '[]'::jsonb)
+        )
+    ELSE NULL END AS data
+),
+multi_diff AS (
+    SELECT CASE WHEN p_run_ids IS NOT NULL AND cardinality(p_run_ids) > 0 THEN
+        jsonb_build_object(
+            'run_ids', to_jsonb(p_run_ids),
+            'selected_runs', COALESCE((
+                SELECT jsonb_agg(to_jsonb(r) ORDER BY u.ord)
+                FROM unnest(p_run_ids) WITH ORDINALITY AS u(rid, ord)
+                JOIN pgbench_runs r ON r.run_id = u.rid
+            ), '[]'::jsonb),
+            'matrix_rows', COALESCE((
+                SELECT jsonb_agg(to_jsonb(m))
+                FROM pgbench_compare_runs(p_run_ids) m
+            ), '[]'::jsonb)
+        )
+    ELSE NULL END AS data
+)
+SELECT jsonb_build_object(
+    'schema', current_schema(),
+    'generated_at', clock_timestamp(),
+    'mode', COALESCE(p_mode, 'overview'),
+    'target_run_id', (SELECT run_id FROM resolved_target),
+    'runs', (SELECT data FROM runs_list),
+    'active_runs', (SELECT data FROM active_list),
+    'selected_run', (SELECT data FROM sel_run),
+    'show_run_rows', (SELECT data FROM show_rows),
+    'groups', (SELECT data FROM grp_rows),
+    'scripts', (SELECT data FROM scr_rows),
+    'commands', (SELECT data FROM cmd_rows),
+    'recalls', (SELECT data FROM rec_rows),
+    'slas', (SELECT data FROM sla_rows),
+    'progress_series', (SELECT data FROM prog_rows),
+    'agg_series', (SELECT data FROM agg_rows),
+    'tx_series', (SELECT data FROM tx_rows),
+    'live_tx_summary', (SELECT data FROM live_tx_pcts),
+    'compare_pair', (SELECT data FROM pair_diff),
+    'compare_multi', (SELECT data FROM multi_diff)
+);
+$func$;
+
 -- -----------------------------------------------------------------------------
 -- 2. Perffarm Animal, Batch & Test Run Tables
 -- -----------------------------------------------------------------------------
@@ -483,10 +1084,12 @@ SELECT
 FROM ordered_runs
 ORDER BY batch_id DESC, test_name ASC;
 
+DROP FUNCTION IF EXISTS perffarm_compare_commits(text, text, text);
 CREATE OR REPLACE FUNCTION perffarm_compare_commits(
     p_sha_a text,
     p_sha_b text,
-    p_animal text DEFAULT NULL
+    p_animal text DEFAULT NULL,
+    p_suite_filter text DEFAULT NULL
 )
 RETURNS TABLE (
     animal_name  text,
@@ -506,6 +1109,7 @@ WITH latest_a AS (
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_a || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
+      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
     ORDER BY s.animal_name, s.test_name, s.batch_id DESC, s.test_run_id DESC
 ),
@@ -515,6 +1119,7 @@ latest_b AS (
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_b || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
+      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
     ORDER BY s.animal_name, s.test_name, s.batch_id DESC, s.test_run_id DESC
 ),

@@ -100,8 +100,8 @@ PG_BRANCHES="${PG_BRANCHES:-master}"                # Space/comma-separated list
 # Compiler & benchmark-grade release flags (NEVER enable --enable-cassert in perffarm runs)
 CC="${CC:-gcc}"
 CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}"
-CONFIGURE_FLAGS="${CONFIGURE_FLAGS:---without-icu}"
-AUTO_DETECT_LIBS="${AUTO_DETECT_LIBS:-true}"        # Auto-append --with-ssl=openssl, --with-lz4, --with-zstd, --with-libxml if headers exist
+CONFIGURE_FLAGS="${CONFIGURE_FLAGS:-}"
+AUTO_DETECT_LIBS="${AUTO_DETECT_LIBS:-true}"        # Auto-append --with-icu (or --without-icu), --with-ssl=openssl, --with-lz4, --with-zstd, --with-libxml
 BUILD_JOBS="${BUILD_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 
 # Optional pre-built PostgreSQL pg_config path (when set, skips git clone + server build)

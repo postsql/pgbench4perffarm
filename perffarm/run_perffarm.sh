@@ -46,6 +46,7 @@ CHECK_WORLD_OVERRIDE=""
 FORCE_RUN=false
 NO_TEMPLATE_REUSE=false
 SKIP_CALIBRATION=false
+ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -233,16 +234,31 @@ bash "$SCRIPT_DIR/setup_metrics_db.sh" --config="$CONF_FILE" \
 # -----------------------------------------------------------------------------
 # Step 1: Checkout Source Tree & Verify CI Status
 # -----------------------------------------------------------------------------
-FIRST_BRANCH="$(echo "$PG_BRANCHES" | tr ',' ' ' | awk '{print $1}')"
+read -r -a BRANCH_LIST <<< "$(echo "$PG_BRANCHES" | tr ',' ' ')"
+if [[ ${#BRANCH_LIST[@]} -gt 1 ]]; then
+    log_info "Multiple branches configured (${BRANCH_LIST[*]}); executing Perffarm batch per branch..."
+    MULTI_RC=0
+    for br in "${BRANCH_LIST[@]}"; do
+        AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --branch="$br" || MULTI_RC=$?
+    done
+    if [[ "${AUTO_TEARDOWN:-false}" == "true" ]]; then
+        bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" teardown
+    fi
+    exit "$MULTI_RC"
+fi
+
+FIRST_BRANCH="${BRANCH_LIST[0]:-master}"
 PG_SRC_DIR="$WORKDIR/src/postgres"
 
 GIT_SHA=""
 GIT_TS=""
 GIT_SUBJECT=""
 CI_STATUS="not_checked"
+HAS_GIT_CHECKOUT=false
 
 if [[ -n "${PG_LOCAL_REPO:-}" && -d "${PG_LOCAL_REPO}/.git" ]]; then
     PG_SRC_DIR="$PG_LOCAL_REPO"
+    HAS_GIT_CHECKOUT=true
     GIT_SHA="$(git -C "$PG_SRC_DIR" rev-parse HEAD)"
     GIT_TS="$(git -C "$PG_SRC_DIR" show -s --format=%cI HEAD)"
     GIT_SUBJECT="$(git -C "$PG_SRC_DIR" show -s --format=%s HEAD)"
@@ -269,36 +285,112 @@ else
         git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH"
         git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH"
     fi
+    HAS_GIT_CHECKOUT=true
     GIT_SHA="$(git -C "$PG_SRC_DIR" rev-parse HEAD)"
     GIT_TS="$(git -C "$PG_SRC_DIR" show -s --format=%cI HEAD)"
     GIT_SUBJECT="$(git -C "$PG_SRC_DIR" show -s --format=%s HEAD)"
 fi
 
-# Verify Upstream CI Status (auto | strict | off)
+# Verify Upstream CI Status (auto | strict | off) with CI_FALLBACK_COMMITS walkback
 if [[ "$VERIFY_CI" == "off" ]]; then
     CI_STATUS="skipped"
 else
-    log_info "Verifying CI status for commit ${GIT_SHA:0:12} (mode=$VERIFY_CI)..."
-    CI_STATUS="$(python3 - "$GIT_SHA" "$VERIFY_CI" <<'PY'
+    log_info "Verifying CI status for commit ${GIT_SHA:0:12} (mode=$VERIFY_CI, fallback_commits=${CI_FALLBACK_COMMITS:-10})..."
+    CI_CHECK_OUT="$(python3 - "$GIT_SHA" "$VERIFY_CI" "${CI_FALLBACK_COMMITS:-10}" "$PG_SRC_DIR" "$HAS_GIT_CHECKOUT" <<'PY'
 import json
+import subprocess
 import sys
 import urllib.request
 
-sha, mode = sys.argv[1], sys.argv[2]
-url = f"https://api.github.com/repos/postgres/postgres/commits/{sha}/status"
-try:
-    req = urllib.request.Request(url, headers={"User-Agent": "pgbench4perffarm/1.0"})
-    with urllib.request.urlopen(req, timeout=8) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-        state = data.get("state", "unknown")
-        if state in ("success", "pending"):
-            print(f"github_{state}")
-        else:
-            print(f"github_{state}")
-except Exception:
-    print("local_or_unverified")
+head_sha, mode, fallback_str, pg_src_dir, has_git_str = sys.argv[1:6]
+max_fallback = max(0, int(fallback_str or 0))
+has_git = has_git_str == "true"
+
+def check_commit_ci(sha: str) -> str:
+    headers = {
+        "User-Agent": "pgbench4perffarm/1.0",
+        "Accept": "application/vnd.github+json",
+    }
+    status_state = "unknown"
+    try:
+        req = urllib.request.Request(
+            f"https://api.github.com/repos/postgres/postgres/commits/{sha}/status",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("total_count", 0) > 0:
+                status_state = data.get("state", "unknown")
+    except Exception:
+        return "local_or_unverified"
+
+    checks_state = "unknown"
+    try:
+        req2 = urllib.request.Request(
+            f"https://api.github.com/repos/postgres/postgres/commits/{sha}/check-runs",
+            headers=headers,
+        )
+        with urllib.request.urlopen(req2, timeout=5) as resp2:
+            cdata = json.loads(resp2.read().decode("utf-8"))
+            runs = cdata.get("check_runs", [])
+            if runs:
+                conclusions = [r.get("conclusion") for r in runs if r.get("status") == "completed"]
+                if any(c in ("failure", "timed_out", "cancelled", "action_required") for c in conclusions):
+                    checks_state = "failure"
+                elif len(conclusions) == len(runs) and any(c == "success" for c in conclusions):
+                    checks_state = "success"
+                else:
+                    checks_state = "pending"
+    except Exception:
+        pass
+
+    if status_state == "failure" or checks_state == "failure":
+        return "github_failure"
+    if status_state == "success" or checks_state == "success":
+        return "github_success"
+    if status_state == "pending" or checks_state == "pending":
+        return "github_pending"
+    return f"github_{status_state}"
+
+candidates = [head_sha]
+if has_git and max_fallback > 0:
+    try:
+        res = subprocess.run(
+            ["git", "-C", pg_src_dir, "rev-list", "-n", str(max_fallback + 1), head_sha],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        revs = [line.strip() for line in res.stdout.splitlines() if line.strip()]
+        if revs:
+            candidates = revs
+    except Exception:
+        pass
+
+chosen_sha = head_sha
+chosen_status = check_commit_ci(head_sha)
+if chosen_status == "github_failure" and len(candidates) > 1:
+    for cand in candidates[1:]:
+        st = check_commit_ci(cand)
+        if st in ("github_success", "github_pending", "github_unknown"):
+            chosen_sha = cand
+            chosen_status = st
+            break
+
+print(f"{chosen_sha} {chosen_status}")
 PY
 )"
+    NEW_SHA="$(echo "$CI_CHECK_OUT" | awk '{print $1}')"
+    CI_STATUS="$(echo "$CI_CHECK_OUT" | awk '{print $2}')"
+    if [[ -n "$NEW_SHA" && "$NEW_SHA" != "$GIT_SHA" && "$HAS_GIT_CHECKOUT" == "true" ]]; then
+        log_info "HEAD commit ${GIT_SHA:0:12} had failing CI; falling back to commit ${NEW_SHA:0:12} ($CI_STATUS)"
+        if [[ -z "${PG_LOCAL_REPO:-}" ]]; then
+            git -C "$PG_SRC_DIR" checkout -f "$NEW_SHA" >/dev/null 2>&1 || true
+        fi
+        GIT_SHA="$NEW_SHA"
+        GIT_TS="$(git -C "$PG_SRC_DIR" show -s --format=%cI "$GIT_SHA")"
+        GIT_SUBJECT="$(git -C "$PG_SRC_DIR" show -s --format=%s "$GIT_SHA")"
+    fi
     if [[ "$VERIFY_CI" == "strict" && "$CI_STATUS" != "github_success" ]]; then
         echo "[run_perffarm] ERROR: Strict CI check failed for $GIT_SHA (status=$CI_STATUS)" >&2
         exit 1
@@ -343,7 +435,7 @@ if [[ "$FORCE_RUN" != "true" ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-# Step 2: Configure & Build PostgreSQL + pgbench4perffarm
+# Step 2: Configure & Build PostgreSQL + pgbench4perffarm (+ optional pgvector)
 # -----------------------------------------------------------------------------
 BUILD_START_TS="$(date +%s)"
 EFFECTIVE_CFG_FLAGS="$(cat "$STATE_DIR/effective_configure_flags.txt" 2>/dev/null || echo "${CONFIGURE_FLAGS:-}")"
@@ -370,6 +462,18 @@ fi
 log_info "Building and installing pgbench4perffarm (contrib/pgbench + src/bin/pgbench) against $TARGET_PG_CONFIG..."
 make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" all >"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
 make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
+
+if [[ "${BUILD_PGVECTOR:-false}" == "true" ]]; then
+    PGVEC_DIR="$WORKDIR/src/pgvector"
+    log_info "Building and installing pgvector (${PGVECTOR_BRANCH:-v0.8.0}) against $TARGET_PG_CONFIG..."
+    if [[ ! -d "$PGVEC_DIR/.git" ]]; then
+        git clone --branch "${PGVECTOR_BRANCH:-v0.8.0}" "${PGVECTOR_GIT_URL:-https://github.com/pgvector/pgvector.git}" "$PGVEC_DIR" >"$LOG_DIR/pgvector_build.log" 2>&1 || true
+    fi
+    if [[ -d "$PGVEC_DIR" ]]; then
+        make -C "$PGVEC_DIR" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" all install >>"$LOG_DIR/pgvector_build.log" 2>&1 || \
+            log_info "WARNING: pgvector build/install failed (see $LOG_DIR/pgvector_build.log)"
+    fi
+fi
 
 BUILD_DURATION_SEC=$(( $(date +%s) - BUILD_START_TS ))
 
@@ -403,9 +507,18 @@ CW_START_TS="$(date +%s)"
 CHECK_WORLD_STATUS="skipped"
 
 stop_existing_bench_server() {
-    if [[ -f "$PGDATA_DIR/postmaster.pid" ]]; then
-        run_on_server "'$PG_CTL' -D '$PGDATA_DIR' -m fast stop" >/dev/null 2>&1 || true
+    run_on_server "if [[ -f '$PGDATA_DIR/postmaster.pid' ]]; then '$PG_CTL' -D '$PGDATA_DIR' -m fast stop; fi" >/dev/null 2>&1 || true
+}
+
+CHECK_PGDATA="$WORKDIR/tmp/check_pgdata"
+CHECK_PGWAL="$WORKDIR/tmp/check_pgwal"
+CHECK_PGPORT=$(( PGPORT + 10 ))
+
+stop_local_check_server() {
+    if [[ -f "$CHECK_PGDATA/postmaster.pid" ]]; then
+        "$PG_CTL" -D "$CHECK_PGDATA" -m fast stop >/dev/null 2>&1 || true
     fi
+    rm -rf "$CHECK_PGDATA" "$CHECK_PGWAL"
 }
 
 if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
@@ -414,28 +527,26 @@ if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     if [[ -d "$PG_SRC_DIR" && -f "$PG_SRC_DIR/GNUmakefile" && "$BUILD_STATUS" != "prebuilt" ]]; then
         make -C "$PG_SRC_DIR" -j"${CHECK_WORLD_JOBS:-$BUILD_JOBS}" check-world >"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     fi
-    stop_existing_bench_server
-    rm -rf "$PGDATA_DIR" "$PGWAL_DIR"
-    mkdir -p "$(dirname "$PGDATA_DIR")" "$(dirname "$PGWAL_DIR")"
-    "$PG_INITDB" -D "$PGDATA_DIR" --waldir="$PGWAL_DIR" --encoding=UTF8 --locale=C --no-instructions >/dev/null
-    echo "port = $PGPORT" >> "$PGDATA_DIR/postgresql.conf"
-    "$PG_CTL" -D "$PGDATA_DIR" -l "$LOG_DIR/check_server.log" -w start >/dev/null
-    make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$PGPORT" PGHOST="127.0.0.1" installcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
+    stop_local_check_server
+    mkdir -p "$WORKDIR/tmp"
+    "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
+    echo "port = $CHECK_PGPORT" >> "$CHECK_PGDATA/postgresql.conf"
+    "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
+    make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
-    "$PG_CTL" -D "$PGDATA_DIR" -m fast stop >/dev/null
+    stop_local_check_server
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
 elif [[ "$CHECK_WORLD_MODE" == "fast" ]]; then
     log_info "Running fast verification (contrib/pgbench SQL regression + pgbench TAP check)..."
     CW_OK=true
-    stop_existing_bench_server
-    rm -rf "$PGDATA_DIR" "$PGWAL_DIR"
-    mkdir -p "$(dirname "$PGDATA_DIR")" "$(dirname "$PGWAL_DIR")"
-    "$PG_INITDB" -D "$PGDATA_DIR" --waldir="$PGWAL_DIR" --encoding=UTF8 --locale=C --no-instructions >/dev/null
-    echo "port = $PGPORT" >> "$PGDATA_DIR/postgresql.conf"
-    "$PG_CTL" -D "$PGDATA_DIR" -l "$LOG_DIR/check_server.log" -w start >/dev/null
-    make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$PGPORT" PGHOST="127.0.0.1" installcheck >"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
+    stop_local_check_server
+    mkdir -p "$WORKDIR/tmp"
+    "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
+    echo "port = $CHECK_PGPORT" >> "$CHECK_PGDATA/postgresql.conf"
+    "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
+    make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
     PROVE_TESTS="t/002_pgbench_no_server.pl" make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" installcheck >>"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
-    "$PG_CTL" -D "$PGDATA_DIR" -m fast stop >/dev/null
+    stop_local_check_server
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
     log_info "Fast verification status: $CHECK_WORLD_STATUS"
 fi
@@ -554,10 +665,9 @@ log_info "Created Perffarm Batch ID=$BATCH_ID (artifacts: $BATCH_DIR)"
 # Step 4: Initialize Benchmark Cluster & Run Client-Server Baseline Calibration
 # -----------------------------------------------------------------------------
 stop_existing_bench_server
-rm -rf "$PGDATA_DIR" "$PGWAL_DIR"
-mkdir -p "$(dirname "$PGDATA_DIR")" "$(dirname "$PGWAL_DIR")"
+run_on_server "rm -rf '$PGDATA_DIR' '$PGWAL_DIR' && mkdir -p \"\$(dirname '$PGDATA_DIR')\" \"\$(dirname '$PGWAL_DIR')\""
 
-log_info "Initializing fresh benchmark PostgreSQL cluster (data=$PGDATA_DIR, wal=$PGWAL_DIR)..."
+log_info "Initializing fresh benchmark PostgreSQL cluster on server (data=$PGDATA_DIR, wal=$PGWAL_DIR)..."
 if [[ "$PGWAL_DIR" != "$PGDATA_DIR/pg_wal" ]]; then
     run_on_server "'$PG_INITDB' -D '$PGDATA_DIR' --waldir='$PGWAL_DIR' --encoding=UTF8 --locale=C --no-instructions >/dev/null"
 else
@@ -583,7 +693,7 @@ apply_server_config_and_restart() {
         cp "$PG_CONF_FILE" "$PGDATA_DIR/postgresql.perffarm.conf"
     fi
 
-    python3 - "$PGDATA_DIR/postgresql.perffarm.conf" "$PGPORT" "$guc_overrides_json" > "$WORKDIR/tmp/per_test_override.conf" <<'PY'
+    python3 - "$PG_CONF_FILE" "$PGPORT" "$guc_overrides_json" > "$WORKDIR/tmp/per_test_override.conf" <<'PY'
 import json
 import sys
 
@@ -598,9 +708,10 @@ PY
     if [[ "$TOPOLOGY" == "remote-server" || "$TOPOLOGY" == "both-remote" ]]; then
         # shellcheck disable=SC2086
         scp -q $SERVER_SSH_OPTS "$WORKDIR/tmp/per_test_override.conf" "$SERVER_SSH_TARGET:$PGDATA_DIR/postgresql.conf"
-        run_on_server "'$PG_CTL' -D '$PGDATA_DIR' -l '$SERVER_WORKDIR/postgres_current.log' -w start >/dev/null"
+        run_on_server "rm -f '$SERVER_WORKDIR/postgres_current.log' && '$PG_CTL' -D '$PGDATA_DIR' -l '$SERVER_WORKDIR/postgres_current.log' -w start >/dev/null"
     else
         cp "$WORKDIR/tmp/per_test_override.conf" "$PGDATA_DIR/postgresql.conf"
+        rm -f "$test_log"
         "$PG_CTL" -D "$PGDATA_DIR" -l "$test_log" -w start >/dev/null
     fi
 
@@ -840,7 +951,21 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
         ${CLIENT_SSH_TARGET:+--client-ssh-target="$CLIENT_SSH_TARGET"} \
         --output="$PRE_SNAP"
 
-    # 5f. Build & Execute pgbench Benchmark Command
+    # 5f. Build & Execute pgbench Benchmark Command (Locally or on Remote Client)
+    IS_REMOTE_CLIENT=false
+    if [[ "$TOPOLOGY" == "remote-client" || "$TOPOLOGY" == "both-remote" ]]; then
+        IS_REMOTE_CLIENT=true
+        CLIENT_TEST_DIR="$CLIENT_WORKDIR/test_${BATCH_ID}_${idx}_${TEST_NAME}"
+        run_on_client "rm -rf '$CLIENT_TEST_DIR' && mkdir -p '$CLIENT_TEST_DIR'"
+        EFFECTIVE_REPORT_JSON="$CLIENT_TEST_DIR/report.json"
+        EFFECTIVE_LOG_PREFIX="$CLIENT_TEST_DIR/pgbench_log"
+        CLIENT_REPO_DIR="$(run_on_client "if [[ -d '$CLIENT_WORKDIR/pgbench4perffarm/src/bin/pgbench' ]]; then echo '$CLIENT_WORKDIR/pgbench4perffarm'; else echo '$REPO_ROOT'; fi")"
+    else
+        EFFECTIVE_REPORT_JSON="$REPORT_JSON"
+        EFFECTIVE_LOG_PREFIX="$TEST_DIR/pgbench_log"
+        CLIENT_REPO_DIR="$REPO_ROOT"
+    fi
+
     PGBENCH_ARGS=(
         -h "$SERVER_HOST"
         -p "$PGPORT"
@@ -855,7 +980,7 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
         --log-db-mode="${LOG_DB_MODE:-stream}"
         --log-db-unlogged="${LOG_DB_UNLOGGED:-stream}"
         --run-label="$RUN_LABEL"
-        --json-report="$REPORT_JSON"
+        --json-report="$EFFECTIVE_REPORT_JSON"
     )
 
     if [[ "$DURATION_SEC" -gt 0 ]]; then
@@ -868,27 +993,46 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
         summary)
             ;;
         timeseries)
-            PGBENCH_ARGS+=(-P 1 -l --aggregate-interval=1)
+            PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --aggregate-interval=1)
             ;;
         full-trace)
-            PGBENCH_ARGS+=(-P 1 -l --log-db-index)
+            PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --log-db-index)
             ;;
     esac
 
     if [[ -n "$BUILTIN_NAME" ]]; then
         PGBENCH_ARGS+=(-b "$BUILTIN_NAME")
     else
-        PGBENCH_ARGS=(--config="$REPO_ROOT/$CONFIG_REL" "${PGBENCH_ARGS[@]}")
+        PGBENCH_ARGS=(--config="$CLIENT_REPO_DIR/$CONFIG_REL" "${PGBENCH_ARGS[@]}")
     fi
     PGBENCH_ARGS+=("$BENCH_DB")
 
-    log_info "[$TEST_NAME] Running benchmark (metrics_level=$METRICS_LEVEL)..."
+    log_info "[$TEST_NAME] Running benchmark (metrics_level=$METRICS_LEVEL, topology=$TOPOLOGY)..."
     set +e
-    (
-        cd "$REPO_ROOT/src/bin/pgbench"
-        "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}" >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
-    )
-    PGBENCH_EXIT=$?
+    if [[ "$IS_REMOTE_CLIENT" == "true" ]]; then
+        QUOTED_PGBENCH="$(printf '%q ' "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}")"
+        CLIENT_FWD_OPTS=""
+        if [[ "${METRICS_DB_HOST:-127.0.0.1}" == "127.0.0.1" || "${METRICS_DB_HOST:-}" == "localhost" ]]; then
+            CLIENT_FWD_OPTS="-o ExitOnForwardFailure=no -R ${METRICS_DB_PORT:-55433}:127.0.0.1:${METRICS_DB_PORT:-55433}"
+        fi
+        # shellcheck disable=SC2086
+        ssh $CLIENT_SSH_OPTS $CLIENT_FWD_OPTS "$CLIENT_SSH_TARGET" \
+            "cd '$CLIENT_REPO_DIR/src/bin/pgbench' && $QUOTED_PGBENCH" \
+            >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
+        PGBENCH_EXIT=$?
+        # Retrieve report.json and any pgbench_log.* files from remote client
+        # shellcheck disable=SC2086
+        scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:$EFFECTIVE_REPORT_JSON" "$REPORT_JSON" 2>/dev/null || true
+        # shellcheck disable=SC2086
+        scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:${EFFECTIVE_LOG_PREFIX}*" "$TEST_DIR/" 2>/dev/null || true
+        run_on_client "rm -rf '$CLIENT_TEST_DIR'" >/dev/null 2>&1 || true
+    else
+        (
+            cd "$REPO_ROOT/src/bin/pgbench"
+            "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}" >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
+        )
+        PGBENCH_EXIT=$?
+    fi
     set -e
 
     # 5g. Capture Post-Benchmark pg_stat_* & OS Snapshot and Compute Delta
@@ -959,6 +1103,7 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
     bash "$SCRIPT_DIR/upload_results.sh" \
         --config="$CONF_FILE" \
         --test-dir="$TEST_DIR" \
+        --upload-level="${UPLOAD_LEVEL:-timeseries}" \
         --psql-bin="$METRICS_PSQL"
 done
 
@@ -1038,6 +1183,7 @@ bash "$SCRIPT_DIR/upload_results.sh" \
     --config="$CONF_FILE" \
     --batch-dir="$BATCH_DIR" \
     --batch-id="$BATCH_ID" \
+    --upload-level="${UPLOAD_LEVEL:-timeseries}" \
     --psql-bin="$METRICS_PSQL"
 
 if [[ "${AUTO_TEARDOWN:-false}" == "true" ]]; then

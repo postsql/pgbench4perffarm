@@ -203,7 +203,7 @@ def main() -> int:
 
     cpus = int(sizing["cpus"])
     media = sizing["media"]
-    is_ssd = media.upper() in ("NVMe", "SSD", "TMPFS/RAMDISK", "NETWORK/VIRTUAL")
+    is_ssd = media.upper() in ("NVME", "SSD", "TMPFS/RAMDISK", "NETWORK/VIRTUAL")
 
     max_workers = max(8, min(64, cpus))
     max_parallel = max(4, min(32, cpus))

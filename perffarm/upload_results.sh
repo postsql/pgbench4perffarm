@@ -121,12 +121,16 @@ if [[ -n "$BATCH_DIR" && -d "$BATCH_DIR" ]]; then
     ARCHIVE_PATH=""
 
     if has_target "archive" || has_target "scp"; then
+        TAR_EXCLUDES=()
+        if [[ "$UPLOAD_LEVEL" == "summary" ]]; then
+            TAR_EXCLUDES=(--exclude='*pgbench_log*')
+        fi
         if command -v zstd >/dev/null 2>&1; then
             ARCHIVE_PATH="$ARCHIVE_DIR/${ANIMAL_NAME}_${BATCH_NAME}_${UPLOAD_LEVEL}.tar.zst"
-            tar -C "$(dirname "$BATCH_DIR")" -cf - "$BATCH_NAME" | zstd -q -T0 -f -o "$ARCHIVE_PATH"
+            tar -C "$(dirname "$BATCH_DIR")" "${TAR_EXCLUDES[@]}" -cf - "$BATCH_NAME" | zstd -q -T0 -f -o "$ARCHIVE_PATH"
         else
             ARCHIVE_PATH="$ARCHIVE_DIR/${ANIMAL_NAME}_${BATCH_NAME}_${UPLOAD_LEVEL}.tar.gz"
-            tar -C "$(dirname "$BATCH_DIR")" -czf "$ARCHIVE_PATH" "$BATCH_NAME"
+            tar -C "$(dirname "$BATCH_DIR")" "${TAR_EXCLUDES[@]}" -czf "$ARCHIVE_PATH" "$BATCH_NAME"
         fi
         log_info "Created result archive: $ARCHIVE_PATH ($(du -h "$ARCHIVE_PATH" | awk '{print $1}'))"
     fi
@@ -151,9 +155,149 @@ if [[ -n "$BATCH_DIR" && -d "$BATCH_DIR" ]]; then
     fi
 
     if has_target "remote_metrics_db" && [[ -n "${REMOTE_METRICS_DB_CONNINFO:-}" && -n "$BATCH_ID" ]]; then
-        log_info "Syncing batch_id=$BATCH_ID to remote metrics DB ($REMOTE_METRICS_DB_CONNINFO)..."
-        "$PSQL_BIN" -X -q -d "$REMOTE_METRICS_DB_CONNINFO" \
-            -f "$SCRIPT_DIR/sql/metrics_db_schema.sql" >/dev/null || true
+        REMOTE_SCHEMA="${REMOTE_METRICS_DB_SCHEMA:-${METRICS_DB_SCHEMA:-public}}"
+        LOCAL_SCHEMA="${METRICS_DB_SCHEMA:-public}"
+        log_info "Syncing batch_id=$BATCH_ID (level=$UPLOAD_LEVEL) from $METRICS_DB_CONNINFO ($LOCAL_SCHEMA) to remote metrics DB ($REMOTE_METRICS_DB_CONNINFO, schema=$REMOTE_SCHEMA)..."
+        if [[ "$REMOTE_SCHEMA" != "public" ]]; then
+            "$PSQL_BIN" -X -q -d "$REMOTE_METRICS_DB_CONNINFO" \
+                -c "CREATE SCHEMA IF NOT EXISTS \"${REMOTE_SCHEMA}\";" >/dev/null || true
+        fi
+        "$PSQL_BIN" -X -q -v ON_ERROR_STOP=1 -d "$REMOTE_METRICS_DB_CONNINFO" \
+            -c "SET search_path TO \"${REMOTE_SCHEMA}\", public, pg_catalog;" \
+            -f "$SCRIPT_DIR/sql/metrics_db_schema.sql" >/dev/null
+
+        python3 - "$PSQL_BIN" "$METRICS_DB_CONNINFO" "$LOCAL_SCHEMA" \
+            "$REMOTE_METRICS_DB_CONNINFO" "$REMOTE_SCHEMA" "$BATCH_ID" "$ANIMAL_NAME" "$UPLOAD_LEVEL" <<'PY'
+import json
+import subprocess
+import sys
+
+(
+    psql_bin,
+    local_conn,
+    local_schema,
+    remote_conn,
+    remote_schema,
+    batch_id_str,
+    animal_name,
+    upload_level,
+) = sys.argv[1:9]
+batch_id = int(batch_id_str)
+
+def query_json(conn: str, sql: str):
+    res = subprocess.run(
+        [psql_bin, "-X", "-q", "-t", "-A", "-d", conn, "-c", sql],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    out = res.stdout.strip()
+    return json.loads(out) if out else []
+
+def exec_remote(sql: str):
+    subprocess.run(
+        [psql_bin, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", remote_conn],
+        input=sql,
+        text=True,
+        check=True,
+    )
+
+def jlit(rows) -> str:
+    return "'" + json.dumps(rows).replace("'", "''") + "'::jsonb"
+
+animals = query_json(
+    local_conn,
+    f'SELECT COALESCE(json_agg(row_to_json(t)), \'[]\'::json) FROM "{local_schema}".perffarm_animals t WHERE animal_name = \'{animal_name}\';',
+)
+batches = query_json(
+    local_conn,
+    f'SELECT COALESCE(json_agg(row_to_json(t)), \'[]\'::json) FROM "{local_schema}".perffarm_batches t WHERE batch_id = {batch_id};',
+)
+test_runs = query_json(
+    local_conn,
+    f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY test_run_id), \'[]\'::json) FROM "{local_schema}".perffarm_test_runs t WHERE batch_id = {batch_id};',
+)
+run_ids = [r["pgbench_run_id"] for r in test_runs if r.get("pgbench_run_id") is not None]
+run_ids_csv = ",".join(str(int(rid)) for rid in run_ids)
+
+sql_parts = [f'SET search_path TO "{remote_schema}", public, pg_catalog;', "BEGIN;"]
+
+if animals:
+    sql_parts.append(f"""
+INSERT INTO perffarm_animals
+SELECT * FROM jsonb_populate_recordset(NULL::perffarm_animals, {jlit(animals)})
+ON CONFLICT (animal_name) DO UPDATE SET
+    owner = EXCLUDED.owner,
+    organization = EXCLUDED.organization,
+    location = EXCLUDED.location,
+    description = EXCLUDED.description,
+    topology = EXCLUDED.topology,
+    hardware_profile = EXCLUDED.hardware_profile,
+    server_instance_info = EXCLUDED.server_instance_info,
+    client_instance_info = EXCLUDED.client_instance_info,
+    os_info = EXCLUDED.os_info,
+    pg_conf_snapshot = EXCLUDED.pg_conf_snapshot,
+    updated_at = EXCLUDED.updated_at;
+""")
+
+if batches:
+    sql_parts.append(f"""
+DELETE FROM perffarm_batches WHERE batch_id = {batch_id};
+INSERT INTO perffarm_batches
+SELECT * FROM jsonb_populate_recordset(NULL::perffarm_batches, {jlit(batches)});
+""")
+
+if run_ids_csv:
+    pgb_runs = query_json(
+        local_conn,
+        f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY run_id), \'[]\'::json) FROM "{local_schema}".pgbench_runs t WHERE run_id IN ({run_ids_csv});',
+    )
+    sql_parts.append(f"DELETE FROM pgbench_runs WHERE run_id IN ({run_ids_csv});")
+    if pgb_runs:
+        sql_parts.append(f"""
+INSERT INTO pgbench_runs
+SELECT * FROM jsonb_populate_recordset(NULL::pgbench_runs, {jlit(pgb_runs)});
+""")
+    child_tables = [
+        "pgbench_run_groups",
+        "pgbench_run_scripts",
+        "pgbench_run_commands",
+        "pgbench_run_recalls",
+        "pgbench_run_slas",
+    ]
+    if upload_level in ("timeseries", "full-trace"):
+        child_tables.extend(["pgbench_progress_log", "pgbench_agg_log"])
+    if upload_level == "full-trace":
+        child_tables.append("pgbench_tx_log")
+
+    for tbl in child_tables:
+        rows = query_json(
+            local_conn,
+            f'SELECT COALESCE(json_agg(row_to_json(t)), \'[]\'::json) FROM "{local_schema}".{tbl} t WHERE run_id IN ({run_ids_csv});',
+        )
+        if rows:
+            sql_parts.append(f"""
+INSERT INTO {tbl}
+SELECT * FROM jsonb_populate_recordset(NULL::{tbl}, {jlit(rows)});
+""")
+
+if test_runs:
+    sql_parts.append(f"""
+DELETE FROM perffarm_test_runs WHERE batch_id = {batch_id};
+INSERT INTO perffarm_test_runs
+SELECT * FROM jsonb_populate_recordset(NULL::perffarm_test_runs, {jlit(test_runs)});
+""")
+
+sql_parts.append("""
+SELECT setval(pg_get_serial_sequence('perffarm_batches', 'batch_id'), COALESCE((SELECT max(batch_id) FROM perffarm_batches), 1), true);
+SELECT setval(pg_get_serial_sequence('perffarm_test_runs', 'test_run_id'), COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 1), true);
+SELECT setval(pg_get_serial_sequence('pgbench_runs', 'run_id'), COALESCE((SELECT max(run_id) FROM pgbench_runs), 1), true);
+COMMIT;
+""")
+
+exec_remote("\n".join(sql_parts))
+PY
+        log_info "Successfully replicated batch_id=$BATCH_ID to remote metrics DB ($REMOTE_METRICS_DB_CONNINFO, schema=$REMOTE_SCHEMA)."
     fi
 fi
 

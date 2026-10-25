@@ -21,7 +21,17 @@ Builds and runs out-of-the-box via `PGXS` against all officially supported Postg
   - `workloads/pgbench-graph/` — Graph & social network analytics (`pgbench-graph`: `lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`)
   - `workloads/pgbench-vec/` — Multi-modal vector similarity search (`pgbench-vec`: `vec_hybrid.pgbench.json`, `vec_aging.pgbench.json`)
 - `viewer/` (`src/bin/pgbench/viewer/`) — Standalone zero-dependency Python (`bottle.py`) + WebAssembly (`pgbench_chart.wasm`) web telemetry viewer (`pgbench_viewer.py`).
-- `doc/src/sgml/` — SGML reference documentation (`ref/pgbench.sgml` and `pgbench-ext.sgml`).
+- `doc/` — Comprehensive Markdown user guides ([`doc/README.md`](doc/README.md)) and DocBook SGML reference documentation (`doc/src/sgml/ref/pgbench.sgml` and `doc/src/sgml/pgbench-ext.sgml`).
+
+## User Guides & Documentation (`doc/`)
+
+- **[Documentation Index & Quick Reference](doc/README.md)** (`doc/README.md`)
+- **[General Usage, Features & Subsystems Overview](doc/user-guide.md)** (`doc/user-guide.md`) — Building & installing via `PGXS` (PostgreSQL 14–20devel), architectural overview of the 12 `pgbench` subsystems and `contrib/pgbench`, declarative `.pgbench.json` configuration (`--config`, `--dump-config`), heterogeneous client groups (`--group`), HDR latency histograms, SLA enforcement (`--sla`), JSON reporting (`--json-report`), `mmap` datasets, and trace replay.
+- **[Database Metrics Streaming (`--log-db`) & Local WebAssembly Viewer Guide](doc/telemetry-and-viewer.md)** (`doc/telemetry-and-viewer.md`) — Streaming telemetry into the 3-tier, 9-table PostgreSQL schema (`--log-db`), in-database SQL inspection and regression comparison SRFs (`pgbench_show_run`, `pgbench_compare_runs`), and the zero-dependency `bottle.py` + `Water.css` + 439-byte WebAssembly Telemetry Viewer & SQL Data Explorer (`viewer/pgbench_viewer.py`).
+- **[TPC-Inspired & HTAP Workloads Guide](doc/tpc-and-htap-workloads.md)** (`doc/tpc-and-htap-workloads.md`) — Parallel in-database initialization and execution guide for `pgbench-b`, `pgbench-c`, `pgbench-e`, `pgbench-h`, `pgbench-ds`, and CH-benCHmark-inspired `pgbench-htap`.
+- **[Graph Database Workloads Guide](doc/graph-workloads.md)** (`doc/graph-workloads.md`) — LDBC-inspired social and financial graph benchmark suites (`LSQB`, `SNB Interactive v1/v2`, `SNB BI`, `FinBench`, and `Graphalytics`) across `SQL`, `SQL_UD` (`UNION DISTINCT ON`), and ISO `SQL/PGQ` (`GRAPH_TABLE`).
+- **[Vector Similarity Search & Index Aging Guide](doc/vector-workloads.md)** (`doc/vector-workloads.md`) — VecBench-inspired vector ANN and hybrid RAG suite (`pgbench-vec` Modes 1–6), exact ground-truth generation, named `Recall@K` SLAs, 10-bucket tail distributions, and `Q1`-vs-`Q4` index aging degradation.
+- **[Benchmark Scripting Language, Expressions & `contrib/pgbench` Guide](doc/benchmark-language-guide.md)** (`doc/benchmark-language-guide.md`) — Complete reference for the `PgBenchValue` runtime type system, all 39 backslash meta-commands, all 49 client-side expression functions, and all 51 `contrib/pgbench` server-side SQL functions.
 
 ## Building and Installing
 

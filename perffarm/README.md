@@ -116,6 +116,15 @@ Key settings in `perffarm/conf/animal.conf`:
     --topology=remote-server \
     --server-ssh=ubuntu@10.128.0.10 \
     --profile=standard
+
+# Run a historical multi-commit series (e.g., 24-hour interval checkouts on master):
+./perffarm/run_perffarm.sh \
+    --config=perffarm/conf/animal.conf \
+    --branch=master \
+    --commits-file=commits_24h_last_month.txt \
+    --ci-status=github_success \
+    --tests=pgbench-c \
+    --profile=standard
 ```
 
 ---

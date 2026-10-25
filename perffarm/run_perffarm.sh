@@ -32,6 +32,10 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONF_FILE="${CONF_FILE:-$SCRIPT_DIR/conf/animal.conf}"
 
 BRANCH_OVERRIDE=""
+COMMIT_OVERRIDE=""
+COMMITS_LIST_OVERRIDE=""
+COMMITS_FILE_OVERRIDE=""
+CI_STATUS_OVERRIDE=""
 PROFILE_OVERRIDE=""
 TESTS_OVERRIDE=""
 METRICS_LEVEL_OVERRIDE=""
@@ -46,6 +50,7 @@ CHECK_WORLD_OVERRIDE=""
 FORCE_RUN=false
 NO_TEMPLATE_REUSE=false
 SKIP_CALIBRATION=false
+SKIP_SETUP=false
 ORIG_ARGS=("$@")
 
 while [[ $# -gt 0 ]]; do
@@ -61,6 +66,38 @@ while [[ $# -gt 0 ]]; do
         --branch=*)
             BRANCH_OVERRIDE="${1#*=}"
             shift
+            ;;
+        --commit=*)
+            COMMIT_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --commit)
+            COMMIT_OVERRIDE="$2"
+            shift 2
+            ;;
+        --commits=*)
+            COMMITS_LIST_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --commits)
+            COMMITS_LIST_OVERRIDE="$2"
+            shift 2
+            ;;
+        --commits-file=*)
+            COMMITS_FILE_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --commits-file)
+            COMMITS_FILE_OVERRIDE="$2"
+            shift 2
+            ;;
+        --ci-status=*)
+            CI_STATUS_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --ci-status)
+            CI_STATUS_OVERRIDE="$2"
+            shift 2
             ;;
         --profile=*)
             PROFILE_OVERRIDE="${1#*=}"
@@ -130,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             SKIP_CALIBRATION=true
             shift
             ;;
+        --skip-setup)
+            SKIP_SETUP=true
+            shift
+            ;;
         -h|--help)
             cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -137,6 +178,10 @@ Usage: $(basename "$0") [OPTIONS]
 Options:
   --config=PATH               Path to animal.conf (default: perffarm/conf/animal.conf)
   --branch=NAME               PostgreSQL git branch to test (overrides PG_BRANCHES)
+  --commit=SHA                Specific PostgreSQL commit SHA/ref to check out and benchmark
+  --commits=SHA1,SHA2,...     Comma- or space-separated list of commits to benchmark sequentially
+  --commits-file=PATH         File containing commit SHAs (one per line) to benchmark sequentially
+  --ci-status=STATUS          Explicit CI status (e.g., github_success) when pre-verified
   --profile=TIER              Sizing profile: smoke | standard | nightly (default: from animal.conf)
   --tests=LIST                Comma-separated test or suite names, or 'all'
   --metrics-level=LEVEL       Telemetry granularity: summary | timeseries | full-trace
@@ -145,7 +190,7 @@ Options:
   --server-ssh=USER@HOST      Remote PostgreSQL server SSH target
   --client-ssh=USER@HOST      Remote pgbench client SSH target
   --prebuilt-pg-config=PATH   Use an existing pg_config binary instead of building PostgreSQL from git
-  --local-pg-src=DIR          Use an existing local PostgreSQL git checkout
+  --local-pg-src=DIR          Use an existing local PostgreSQL git checkout (or reference clone)
   --verify-ci=MODE            auto | strict | off
   --skip-ci-check             Alias for --verify-ci=off
   --check-world=MODE          full | fast | skip
@@ -154,6 +199,7 @@ Options:
   --force                     Run even if this commit was already tested for this animal & profile
   --no-template-reuse         Re-initialize database from scratch for every test
   --skip-calibration          Skip client-server SELECT 1 / repeat('0123456789', 100000) calibration
+  --skip-setup                Skip Step 0 machine discovery & Metrics DB setup (for multi-commit loops)
   -h, --help                  Show this help message
 EOF
             exit 0
@@ -218,28 +264,66 @@ run_on_client() {
 # -----------------------------------------------------------------------------
 # Step 0: Provision Hosts (if dynamic), Refresh Hardware Info & Start Metrics DB
 # -----------------------------------------------------------------------------
-if [[ "${AUTO_PROVISION:-false}" == "true" ]]; then
-    bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" provision
-fi
+if [[ "$SKIP_SETUP" != "true" ]]; then
+    if [[ "${AUTO_PROVISION:-false}" == "true" ]]; then
+        bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" provision
+    fi
 
-bash "$SCRIPT_DIR/setup_machine.sh" --config="$CONF_FILE"
-if [[ "$TOPOLOGY" != "local" ]]; then
-    bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" sync-repo
-fi
+    bash "$SCRIPT_DIR/setup_machine.sh" --config="$CONF_FILE"
+    if [[ "$TOPOLOGY" != "local" ]]; then
+        bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" sync-repo
+    fi
 
-PG_CONFIG_FOR_METRICS="${PREBUILT_PG_CONFIG:-${PG_CONFIG:-}}"
-bash "$SCRIPT_DIR/setup_metrics_db.sh" --config="$CONF_FILE" \
-    ${PG_CONFIG_FOR_METRICS:+--pg-config="$PG_CONFIG_FOR_METRICS"} --ensure
+    PG_CONFIG_FOR_METRICS="${METRICS_PG_CONFIG:-${PREBUILT_PG_CONFIG:-${PG_CONFIG:-}}}"
+    bash "$SCRIPT_DIR/setup_metrics_db.sh" --config="$CONF_FILE" \
+        ${PG_CONFIG_FOR_METRICS:+--pg-config="$PG_CONFIG_FOR_METRICS"} --ensure
+fi
 
 # -----------------------------------------------------------------------------
 # Step 1: Checkout Source Tree & Verify CI Status
 # -----------------------------------------------------------------------------
+# Handle multi-commit sequential execution (--commits or --commits-file)
+if [[ -z "$COMMIT_OVERRIDE" && ( -n "$COMMITS_LIST_OVERRIDE" || -n "$COMMITS_FILE_OVERRIDE" ) ]]; then
+    COMMIT_LIST=()
+    if [[ -n "$COMMITS_LIST_OVERRIDE" ]]; then
+        read -r -a EXTRA_COMMITS <<< "$(echo "$COMMITS_LIST_OVERRIDE" | tr ',' ' ')"
+        COMMIT_LIST+=("${EXTRA_COMMITS[@]}")
+    fi
+    if [[ -n "$COMMITS_FILE_OVERRIDE" ]]; then
+        if [[ ! -f "$COMMITS_FILE_OVERRIDE" ]]; then
+            echo "[run_perffarm] ERROR: Commits file not found: $COMMITS_FILE_OVERRIDE" >&2
+            exit 1
+        fi
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            # Strip comments and leading/trailing whitespace, take first token as SHA
+            clean_line="${line%%#*}"
+            sha_tok="$(echo "$clean_line" | awk '{print $1}')"
+            if [[ -n "$sha_tok" ]]; then
+                COMMIT_LIST+=("$sha_tok")
+            fi
+        done < "$COMMITS_FILE_OVERRIDE"
+    fi
+
+    log_info "Multi-commit run configured (${#COMMIT_LIST[@]} commits); executing sequentially..."
+    MULTI_COMMIT_RC=0
+    COMMIT_IDX=0
+    for sha in "${COMMIT_LIST[@]}"; do
+        COMMIT_IDX=$((COMMIT_IDX + 1))
+        log_info "=== Multi-commit progress: [${COMMIT_IDX}/${#COMMIT_LIST[@]}] commit ${sha:0:12} ==="
+        AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --commit="$sha" --skip-setup || MULTI_COMMIT_RC=$?
+    done
+    if [[ "${AUTO_TEARDOWN:-false}" == "true" ]]; then
+        bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" teardown
+    fi
+    exit "$MULTI_COMMIT_RC"
+fi
+
 read -r -a BRANCH_LIST <<< "$(echo "$PG_BRANCHES" | tr ',' ' ')"
-if [[ ${#BRANCH_LIST[@]} -gt 1 ]]; then
+if [[ ${#BRANCH_LIST[@]} -gt 1 && -z "$COMMIT_OVERRIDE" ]]; then
     log_info "Multiple branches configured (${BRANCH_LIST[*]}); executing Perffarm batch per branch..."
     MULTI_RC=0
     for br in "${BRANCH_LIST[@]}"; do
-        AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --branch="$br" || MULTI_RC=$?
+        AUTO_PROVISION=false AUTO_TEARDOWN=false bash "$0" "${ORIG_ARGS[@]}" --branch="$br" --skip-setup || MULTI_RC=$?
     done
     if [[ "${AUTO_TEARDOWN:-false}" == "true" ]]; then
         bash "$SCRIPT_DIR/provision_hosts.sh" --config="$CONF_FILE" teardown
@@ -256,15 +340,18 @@ GIT_SUBJECT=""
 CI_STATUS="not_checked"
 HAS_GIT_CHECKOUT=false
 
-if [[ -n "${PG_LOCAL_REPO:-}" && -d "${PG_LOCAL_REPO}/.git" ]]; then
+if [[ -n "${PG_LOCAL_REPO:-}" && -d "${PG_LOCAL_REPO}/.git" && -z "$COMMIT_OVERRIDE" ]]; then
     PG_SRC_DIR="$PG_LOCAL_REPO"
     HAS_GIT_CHECKOUT=true
     GIT_SHA="$(git -C "$PG_SRC_DIR" rev-parse HEAD)"
     GIT_TS="$(git -C "$PG_SRC_DIR" show -s --format=%cI HEAD)"
     GIT_SUBJECT="$(git -C "$PG_SRC_DIR" show -s --format=%s HEAD)"
-    FIRST_BRANCH="$(git -C "$PG_SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$FIRST_BRANCH")"
+    LOCAL_BR="$(git -C "$PG_SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "$FIRST_BRANCH")"
+    if [[ "$LOCAL_BR" != "HEAD" && -z "$BRANCH_OVERRIDE" ]]; then
+        FIRST_BRANCH="$LOCAL_BR"
+    fi
     log_info "Using local PostgreSQL git tree at $PG_SRC_DIR ($FIRST_BRANCH @ ${GIT_SHA:0:12})"
-elif [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1; then
+elif [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1 && [[ -z "$COMMIT_OVERRIDE" ]]; then
     # Check if there is an associated source tree or fallback to repo commit + pg_config version
     if [[ -d "$PG_SRC_DIR/.git" ]]; then
         REF_GIT="$PG_SRC_DIR"
@@ -278,12 +365,32 @@ elif [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/
     fi
     log_info "Using prebuilt pg_config at $PREBUILT_PG_CONFIG (commit ${GIT_SHA:0:12})"
 else
-    log_info "Checking out PostgreSQL branch '$FIRST_BRANCH' from $PG_GIT_URL..."
+    mkdir -p "$(dirname "$PG_SRC_DIR")"
     if [[ ! -d "$PG_SRC_DIR/.git" ]]; then
-        git clone --branch "$FIRST_BRANCH" "$PG_GIT_URL" "$PG_SRC_DIR"
+        if [[ -n "${PG_LOCAL_REPO:-}" && -d "${PG_LOCAL_REPO}/.git" ]]; then
+            log_info "Cloning PostgreSQL worktree into $PG_SRC_DIR using local reference $PG_LOCAL_REPO..."
+            git clone --shared "$PG_LOCAL_REPO" "$PG_SRC_DIR"
+            git -C "$PG_SRC_DIR" remote set-url origin "$PG_GIT_URL" || true
+        else
+            log_info "Cloning PostgreSQL branch '$FIRST_BRANCH' from $PG_GIT_URL..."
+            git clone --branch "$FIRST_BRANCH" "$PG_GIT_URL" "$PG_SRC_DIR"
+        fi
+    fi
+
+    if [[ -n "$COMMIT_OVERRIDE" ]]; then
+        log_info "Checking out requested commit '$COMMIT_OVERRIDE' on branch '$FIRST_BRANCH'..."
+        if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{commit}" 2>/dev/null; then
+            git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
+                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || \
+                git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || true
+        fi
+        git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1
     else
-        git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH"
-        git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH"
+        log_info "Checking out latest PostgreSQL branch '$FIRST_BRANCH' from $PG_GIT_URL..."
+        git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
+            git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1
+        git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
+            git -C "$PG_SRC_DIR" checkout -f FETCH_HEAD >/dev/null 2>&1
     fi
     HAS_GIT_CHECKOUT=true
     GIT_SHA="$(git -C "$PG_SRC_DIR" rev-parse HEAD)"
@@ -292,12 +399,20 @@ else
 fi
 
 # Verify Upstream CI Status (auto | strict | off) with CI_FALLBACK_COMMITS walkback
-if [[ "$VERIFY_CI" == "off" ]]; then
+if [[ -n "$CI_STATUS_OVERRIDE" ]]; then
+    CI_STATUS="$CI_STATUS_OVERRIDE"
+    log_info "Using explicit CI status override: $CI_STATUS"
+elif [[ "$VERIFY_CI" == "off" ]]; then
     CI_STATUS="skipped"
 else
-    log_info "Verifying CI status for commit ${GIT_SHA:0:12} (mode=$VERIFY_CI, fallback_commits=${CI_FALLBACK_COMMITS:-10})..."
-    CI_CHECK_OUT="$(python3 - "$GIT_SHA" "$VERIFY_CI" "${CI_FALLBACK_COMMITS:-10}" "$PG_SRC_DIR" "$HAS_GIT_CHECKOUT" <<'PY'
+    FALLBACK_MAX="${CI_FALLBACK_COMMITS:-10}"
+    if [[ -n "$COMMIT_OVERRIDE" ]]; then
+        FALLBACK_MAX=0
+    fi
+    log_info "Verifying CI status for commit ${GIT_SHA:0:12} (mode=$VERIFY_CI, fallback_commits=$FALLBACK_MAX)..."
+    CI_CHECK_OUT="$(python3 - "$GIT_SHA" "$VERIFY_CI" "$FALLBACK_MAX" "$PG_SRC_DIR" "$HAS_GIT_CHECKOUT" <<'PY'
 import json
+import os
 import subprocess
 import sys
 import urllib.request
@@ -311,6 +426,9 @@ def check_commit_ci(sha: str) -> str:
         "User-Agent": "pgbench4perffarm/1.0",
         "Accept": "application/vnd.github+json",
     }
+    gh_token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if gh_token:
+        headers["Authorization"] = f"Bearer {gh_token}"
     status_state = "unknown"
     try:
         req = urllib.request.Request(
@@ -384,9 +502,7 @@ PY
     CI_STATUS="$(echo "$CI_CHECK_OUT" | awk '{print $2}')"
     if [[ -n "$NEW_SHA" && "$NEW_SHA" != "$GIT_SHA" && "$HAS_GIT_CHECKOUT" == "true" ]]; then
         log_info "HEAD commit ${GIT_SHA:0:12} had failing CI; falling back to commit ${NEW_SHA:0:12} ($CI_STATUS)"
-        if [[ -z "${PG_LOCAL_REPO:-}" ]]; then
-            git -C "$PG_SRC_DIR" checkout -f "$NEW_SHA" >/dev/null 2>&1 || true
-        fi
+        git -C "$PG_SRC_DIR" checkout -f "$NEW_SHA" >/dev/null 2>&1 || true
         GIT_SHA="$NEW_SHA"
         GIT_TS="$(git -C "$PG_SRC_DIR" show -s --format=%cI "$GIT_SHA")"
         GIT_SUBJECT="$(git -C "$PG_SRC_DIR" show -s --format=%s "$GIT_SHA")"
@@ -400,7 +516,22 @@ fi
 # Resolve Metrics DB psql binary
 resolve_metrics_psql() {
     local candidate bindir
-    for candidate in "${PREBUILT_PG_CONFIG:-}" "$WORKDIR/install/bin/pg_config" "${PG_CONFIG:-}" "pg_config"; do
+    local candidates=(
+        "${METRICS_PG_CONFIG:-}"
+        "$WORKDIR/metrics_pg_install/bin/pg_config"
+        "${PREBUILT_PG_CONFIG:-}"
+        "${PG_CONFIG:-}"
+        "pg_config"
+        "$HOME/pg20_install/bin/pg_config"
+        "$HOME/pg18/bin/pg_config"
+        "$WORKDIR/install/bin/pg_config"
+    )
+    for sys_pgc in /usr/lib/postgresql/*/bin/pg_config; do
+        if [[ -x "$sys_pgc" ]]; then
+            candidates+=("$sys_pgc")
+        fi
+    done
+    for candidate in "${candidates[@]}"; do
         if [[ -n "$candidate" ]] && command -v "$candidate" >/dev/null 2>&1; then
             bindir="$("$candidate" --bindir 2>/dev/null || true)"
             if [[ -n "$bindir" && -x "$bindir/psql" ]]; then
@@ -439,17 +570,44 @@ fi
 # -----------------------------------------------------------------------------
 BUILD_START_TS="$(date +%s)"
 EFFECTIVE_CFG_FLAGS="$(cat "$STATE_DIR/effective_configure_flags.txt" 2>/dev/null || echo "${CONFIGURE_FLAGS:-}")"
+EFFECTIVE_CC="${CC:-gcc}"
+if [[ "${USE_CCACHE:-auto}" == "true" || "${USE_CCACHE:-auto}" == "auto" ]]; then
+    if command -v ccache >/dev/null 2>&1 && [[ "$EFFECTIVE_CC" != *ccache* ]]; then
+        export CCACHE_DIR="${CCACHE_DIR:-$WORKDIR/ccache}"
+        mkdir -p "$CCACHE_DIR"
+        EFFECTIVE_CC="ccache $EFFECTIVE_CC"
+    fi
+fi
 
-if [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1; then
+if [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1 && [[ -z "$COMMIT_OVERRIDE" ]]; then
     TARGET_PG_CONFIG="$(command -v "$PREBUILT_PG_CONFIG")"
     BUILD_STATUS="prebuilt"
 else
-    log_info "Configuring and building PostgreSQL in $PG_SRC_DIR..."
+    log_info "Configuring and building PostgreSQL in $PG_SRC_DIR (CC='$EFFECTIVE_CC', jobs=$BUILD_JOBS)..."
     (
         cd "$PG_SRC_DIR"
-        # shellcheck disable=SC2086
-        ./configure --prefix="$WORKDIR/install" CC="${CC:-gcc}" CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}" $EFFECTIVE_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
-        make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1
+        CFG_INPUT_HASH="$(sha256sum configure configure.ac src/include/pg_config.h.in 2>/dev/null | sha256sum | awk '{print $1}')"
+        CFG_SIG="${EFFECTIVE_CC}|${CFLAGS:--O2 -g -fno-omit-frame-pointer}|${EFFECTIVE_CFG_FLAGS}|${CFG_INPUT_HASH}"
+        NEED_CONFIGURE=true
+        if [[ -x "config.status" && -f ".perffarm_cfg_sig" && "$(cat .perffarm_cfg_sig 2>/dev/null)" == "$CFG_SIG" ]]; then
+            NEED_CONFIGURE=false
+        fi
+
+        if [[ "$NEED_CONFIGURE" == "true" ]]; then
+            # shellcheck disable=SC2086
+            ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}" $EFFECTIVE_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
+            echo "$CFG_SIG" > .perffarm_cfg_sig
+        fi
+
+        if ! make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1; then
+            log_info "Incremental build encountered an error; running clean configure and build..."
+            make distclean >/dev/null 2>&1 || true
+            # shellcheck disable=SC2086
+            ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}" $EFFECTIVE_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
+            echo "$CFG_SIG" > .perffarm_cfg_sig
+            make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1
+        fi
+
         make install >"$LOG_DIR/pg_install.log" 2>&1
         if [[ -d "contrib/pg_stat_statements" ]]; then
             make -C contrib/pg_stat_statements -j"$BUILD_JOBS" install >>"$LOG_DIR/pg_install.log" 2>&1 || true
@@ -460,7 +618,8 @@ else
 fi
 
 log_info "Building and installing pgbench4perffarm (contrib/pgbench + src/bin/pgbench) against $TARGET_PG_CONFIG..."
-make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" all >"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
+make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" clean >"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 || true
+make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" all >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
 make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1
 
 if [[ "${BUILD_PGVECTOR:-false}" == "true" ]]; then

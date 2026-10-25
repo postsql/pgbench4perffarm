@@ -82,13 +82,42 @@ log_info() {
 
 resolve_pg_bindir() {
     local candidate
-    for candidate in "$PG_CONFIG_OVERRIDE" "${PREBUILT_PG_CONFIG:-}" "$WORKDIR/install/bin/pg_config" "${PG_CONFIG:-}" "pg_config"; do
+    local candidates=(
+        "$PG_CONFIG_OVERRIDE"
+        "${METRICS_PG_CONFIG:-}"
+        "$WORKDIR/metrics_pg_install/bin/pg_config"
+        "${PREBUILT_PG_CONFIG:-}"
+        "${PG_CONFIG:-}"
+        "pg_config"
+        "$HOME/pg20_install/bin/pg_config"
+        "$HOME/pg18/bin/pg_config"
+    )
+    for sys_pgc in /usr/lib/postgresql/*/bin/pg_config; do
+        if [[ -x "$sys_pgc" ]]; then
+            candidates+=("$sys_pgc")
+        fi
+    done
+
+    for candidate in "${candidates[@]}"; do
         if [[ -n "$candidate" ]] && command -v "$candidate" >/dev/null 2>&1; then
             "$candidate" --bindir
             return 0
         fi
     done
-    echo "[setup_metrics_db] ERROR: Could not locate pg_config. Pass --pg-config=/path/to/pg_config or set PREBUILT_PG_CONFIG." >&2
+
+    # Fallback: if only the mutable target build ($WORKDIR/install) exists, copy it
+    # into a dedicated $WORKDIR/metrics_pg_install so future multi-commit rebuilds
+    # across CATALOG_VERSION_NO bumps do not overwrite the Metrics DB binaries.
+    if [[ -x "$WORKDIR/install/bin/pg_config" ]]; then
+        if [[ ! -x "$WORKDIR/metrics_pg_install/bin/pg_config" ]]; then
+            rm -rf "$WORKDIR/metrics_pg_install"
+            cp -a "$WORKDIR/install" "$WORKDIR/metrics_pg_install"
+        fi
+        echo "$WORKDIR/metrics_pg_install/bin"
+        return 0
+    fi
+
+    echo "[setup_metrics_db] ERROR: Could not locate pg_config. Pass --pg-config=/path/to/pg_config or set METRICS_PG_CONFIG / PREBUILT_PG_CONFIG." >&2
     return 1
 }
 

@@ -99,6 +99,8 @@ PG_BRANCHES="${PG_BRANCHES:-master}"                # Space/comma-separated list
 
 # Compiler & benchmark-grade release flags (NEVER enable --enable-cassert in perffarm runs)
 CC="${CC:-gcc}"
+USE_CCACHE="${USE_CCACHE:-auto}"                    # "auto" (use ccache if installed), "true", or "false"
+CCACHE_DIR="${CCACHE_DIR:-$WORKDIR/ccache}"         # Persistent ccache directory for fast multi-commit builds
 CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}"
 CONFIGURE_FLAGS="${CONFIGURE_FLAGS:-}"
 AUTO_DETECT_LIBS="${AUTO_DETECT_LIBS:-true}"        # Auto-append --with-icu (or --without-icu), --with-ssl=openssl, --with-lz4, --with-zstd, --with-libxml
@@ -143,6 +145,7 @@ PG_EXTRA_GUCS="${PG_EXTRA_GUCS:-}"                  # Optional semicolon-separat
 #   "local"    : setup_metrics_db.sh provisions & manages a dedicated local PostgreSQL cluster.
 #   "external" : Connect to an existing PostgreSQL database via METRICS_DB_CONNINFO.
 METRICS_DB_MODE="${METRICS_DB_MODE:-local}"
+METRICS_PG_CONFIG="${METRICS_PG_CONFIG:-}"          # Optional dedicated pg_config for local Metrics DB cluster
 METRICS_DB_HOST="${METRICS_DB_HOST:-127.0.0.1}"
 METRICS_DB_PORT="${METRICS_DB_PORT:-55433}"
 METRICS_DB_NAME="${METRICS_DB_NAME:-perffarm_metrics}"

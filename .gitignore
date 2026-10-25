@@ -1,0 +1,16 @@
+*.o
+*.so
+*.dylib
+*.dll
+*.bc
+src/bin/pgbench/pgbench
+src/bin/pgbench/exprparse.c
+src/bin/pgbench/exprparse.h
+src/bin/pgbench/exprscan.c
+src/bin/pgbench/pgbench_funcs.c
+src/bin/pgbench/tmp_check/
+contrib/pgbench/pgbench_funcs.c
+contrib/pgbench/results/
+contrib/pgbench/regression.diffs
+contrib/pgbench/regression.out
+contrib/pgbench/tmp_check/

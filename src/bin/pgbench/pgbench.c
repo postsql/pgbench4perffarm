@@ -1,0 +1,2013 @@
+/*
+ * pgbench.c
+ *
+ * A simple benchmark program for PostgreSQL
+ * Originally written by Tatsuo Ishii and enhanced by many contributors.
+ *
+ * src/bin/pgbench/pgbench.c
+ * Copyright (c) 2000-2026, PostgreSQL Global Development Group
+ * ALL RIGHTS RESERVED;
+ *
+ * Permission to use, copy, modify, and distribute this software and its
+ * documentation for any purpose, without fee, and without a written agreement
+ * is hereby granted, provided that the above copyright notice and this
+ * paragraph and the following two paragraphs appear in all copies.
+ *
+ * IN NO EVENT SHALL THE AUTHOR OR DISTRIBUTORS BE LIABLE TO ANY PARTY FOR
+ * DIRECT, INDIRECT, SPECIAL, INCIDENTAL, OR CONSEQUENTIAL DAMAGES, INCLUDING
+ * LOST PROFITS, ARISING OUT OF THE USE OF THIS SOFTWARE AND ITS
+ * DOCUMENTATION, EVEN IF THE AUTHOR OR DISTRIBUTORS HAVE BEEN ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ *
+ * THE AUTHOR AND DISTRIBUTORS SPECIFICALLY DISCLAIMS ANY WARRANTIES,
+ * INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY
+ * AND FITNESS FOR A PARTICULAR PURPOSE.  THE SOFTWARE PROVIDED HEREUNDER IS
+ * ON AN "AS IS" BASIS, AND THE AUTHOR AND DISTRIBUTORS HAS NO OBLIGATIONS TO
+ * PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS, OR MODIFICATIONS.
+ *
+ */
+
+#if defined(WIN32) && FD_SETSIZE < 1024
+#error FD_SETSIZE needs to have been increased
+#endif
+
+#include "postgres_fe.h"
+
+#include <ctype.h>
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/resource.h>		/* for getrlimit */
+
+
+#include "common/int.h"
+#include "common/logging.h"
+#include "common/pgbench_funcs.h"
+#include "common/string.h"
+#include "common/username.h"
+#include "fe_utils/cancel.h"
+#include "fe_utils/conditional.h"
+#include "fe_utils/option_utils.h"
+#include "fe_utils/string_utils.h"
+#include "getopt_long.h"
+#include "libpq-fe.h"
+#include "pgbench.h"
+#include "commands.h"
+#include "config.h"
+#include "dataset.h"
+#include "engine.h"
+#include "init.h"
+#include "logdb.h"
+#include "poller.h"
+#include "script.h"
+#include "stats.h"
+#include "port/pg_bitutils.h"
+
+
+/* random seed used to initialize base_random_sequence */
+int64		random_seed = -1;
+bool		random_seed_set = false;
+
+char	   *initialize_steps = NULL;
+bool		foreign_keys = false;
+bool		is_no_vacuum = false;
+bool		do_vacuum_accounts = false; /* vacuum accounts table? */
+bool		scale_given = false;
+bool		internal_script_used = false;
+int			copy_nthreads = 1;
+
+
+static void
+usage(void)
+{
+	printf("%s is a benchmarking tool for PostgreSQL.\n\n"
+		   "Usage:\n"
+		   "  %s [OPTION]... [DBNAME]\n"
+		   "\nInitialization options:\n"
+		   "  -i, --initialize         invokes initialization mode\n"
+		   "  -I, --init-steps=[" ALL_INIT_STEPS "]+ (default \"" DEFAULT_INIT_STEPS "\")\n"
+		   "                           run selected initialization steps, in the specified order\n"
+		   "                           d: drop any existing pgbench tables\n"
+		   "                           t: create the tables used by the standard pgbench scenario\n"
+		   "                           g: generate data, client-side\n"
+		   "                           G: generate data, server-side\n"
+		   "                           v: invoke VACUUM on the standard tables\n"
+		   "                           p: create primary key indexes on the standard tables\n"
+		   "                           f: create foreign keys between the standard tables\n"
+		   "  -F, --fillfactor=NUM     set fill factor\n"
+		   "  -n, --no-vacuum          do not run VACUUM during initialization\n"
+		   "  -q, --quiet              quiet logging (one message each 5 seconds)\n"
+		   "  -s, --scale=NUM          scaling factor\n"
+		   "  --foreign-keys           create foreign key constraints between tables\n"
+		   "  --index-tablespace=TABLESPACE\n"
+		   "                           create indexes in the specified tablespace\n"
+		   "  --partition-method=(range|hash)\n"
+		   "                           partition pgbench_accounts with this method (default: range)\n"
+		   "  --partitions=NUM         partition pgbench_accounts into NUM parts (default: 0)\n"
+		   "  --tablespace=TABLESPACE  create tables in the specified tablespace\n"
+		   "  --unlogged-tables        create tables as unlogged tables\n"
+		   "\nOptions to select what to run:\n"
+		   "  -b, --builtin=NAME[@W]   add builtin script NAME weighted at W (default: 1)\n"
+		   "                           (use \"-b list\" to list available scripts)\n"
+		   "  -f, --file=FILENAME[@W]  add script FILENAME weighted at W (default: 1)\n"
+		   "  -N, --skip-some-updates  skip updates of pgbench_tellers and pgbench_branches\n"
+		   "                           (same as \"-b simple-update\")\n"
+		   "  -S, --select-only        perform SELECT-only transactions\n"
+		   "                           (same as \"-b select-only\")\n"
+		   "\nBenchmarking options:\n"
+		   "  -c, --client=NUM         number of concurrent database clients (default: 1)\n"
+		   "  -C, --connect            establish new connection for each transaction\n"
+		   "  -D, --define=VARNAME=VALUE\n"
+		   "                           define variable for use by custom script\n"
+		   "  -j, --jobs=NUM           number of threads (default: 1)\n"
+		   "  -l, --log                write transaction times to log file\n"
+		   "  -L, --latency-limit=NUM  count transactions lasting more than NUM ms as late\n"
+		   "  -M, --protocol=simple|extended|prepared\n"
+		   "                           protocol for submitting queries (default: simple)\n"
+		   "  -n, --no-vacuum          do not run VACUUM before tests\n"
+		   "  -P, --progress=NUM       show thread progress report every NUM seconds\n"
+		   "  -r, --report-per-command report latencies, failures, and retries per command\n"
+		   "  -R, --rate=NUM           target rate in transactions per second\n"
+		   "  -s, --scale=NUM          report this scale factor in output\n"
+		   "  -t, --transactions=NUM   number of transactions each client runs (default: 10)\n"
+		   "  -T, --time=NUM           duration of benchmark test in seconds\n"
+		   "  -v, --vacuum-all         vacuum all four standard tables before tests\n"
+		   "  --aggregate-interval=NUM aggregate data over NUM seconds\n"
+		   "  --config=FILENAME        load configuration from JSON/JSONC file\n"
+		   "  --continue-on-error      continue running after an SQL error\n"
+		   "  --copy-dataset=SPEC      bulk load dataset via parallel COPY (<name>:<table>[(<cols>)])\n"
+		   "  --dataset=NAME=PATH      load shared read-only dataset (.fvecs, .bvecs, .ivecs, .csv, .tsv)\n"
+		   "  --dump-config=FILENAME   export effective configuration to JSON file (\"-\" for stdout)\n"
+		   "  --exit-on-abort          exit when any client is aborted\n"
+		   "  --failures-detailed      report the failures grouped by basic types\n"
+		   "  --group=SPEC             define a client group (name=...,clients=...,threads=...,\n"
+		   "                           file=...,builtin=...,sequential=...,rate=...)\n"
+		   "  --json-report=FILENAME   write structured JSON benchmark report to FILENAME\n"
+		   "  --log-db=CONNINFO        persist telemetry and reports to PostgreSQL (\"self\" or conninfo)\n"
+		   "  --log-db-index           build post-run indexes on pgbench_tx_log and pgbench_agg_log\n"
+		   "  --log-db-mode=MODE       database logging mode: stream|deferred (default: stream)\n"
+		   "  --log-db-schema=SCHEMA   target schema for --log-db tables and functions (default: public)\n"
+		   "  --log-db-unlogged[=MODE] table persistence for --log-db: stream|all|off (default: stream)\n"
+		   "  --log-prefix=PREFIX      prefix for transaction time log file\n"
+		   "                           (default: \"pgbench_log\")\n"
+		   "  --max-concurrent-sessions=NUM\n"
+		   "                           limit initially established sessions to NUM\n"
+		   "  --max-tries=NUM          max number of tries to run transaction (default: 1)\n"
+		   "  --ontime-threshold=MS    max schedule lag in ms considered on-time (default: 50.0)\n"
+		   "  --progress-timestamp     use Unix epoch timestamps for progress\n"
+		   "  --random-seed=SEED       set random seed (\"time\", \"rand\", integer)\n"
+		   "  --replay=FILENAME        replay timestamped SQL trace from CSV file\n"
+		   "  --replay-speed=FACTOR    scale relative timestamps in \\wait_until (default: 1.0)\n"
+		   "  --reservoir=NAME:CAP     create a shared bounded reservoir of capacity CAP\n"
+		   "  --run-label=LABEL        human-readable label for this benchmark run\n"
+		   "  --sampling-rate=NUM      fraction of transactions to log (e.g., 0.01 for 1%%)\n"
+		   "  --show-script=NAME       show builtin script code, then exit\n"
+		   "  --sla=SPEC               define SLA threshold ([scope:]metric(<=|>=)val[unit])\n"
+		   "  --tcr=RATIO              alias for --replay-speed (time compression ratio)\n"
+		   "  --vector-dataset=NAME=PATH\n"
+		   "                           alias for --dataset=NAME=PATH\n"
+		   "  --verbose-errors         print messages of all errors\n"
+		   "\nCommon options:\n"
+		   "  --debug                  print debugging output\n"
+		   "  -d, --dbname=DBNAME      database name to connect to\n"
+		   "  -h, --host=HOSTNAME      database server host or socket directory\n"
+		   "  -p, --port=PORT          database server port number\n"
+		   "  -U, --username=USERNAME  connect as specified database user\n"
+		   "  -V, --version            output version information, then exit\n"
+		   "  -?, --help               show this help, then exit\n"
+		   "\n"
+		   "Report bugs to <%s>.\n"
+		   "%s home page: <%s>\n",
+		   progname, progname, PACKAGE_BUGREPORT, PACKAGE_NAME, PACKAGE_URL);
+}
+
+
+/*
+ * Parse a --group specification of the form:
+ *   name=<name>,clients=<N>,threads=<M>,file=<path>[@W],builtin=<name>[@W],sequential=true|false,rate=<R>
+ */
+static void
+parseGroupSpec(const char *spec, bool *internal_script_used)
+{
+	ClientGroup *grp;
+	char	   *copy;
+	char	   *token;
+	char	   *next;
+
+	if (num_groups >= MAX_GROUPS)
+		pg_fatal("at most %d client groups are allowed", MAX_GROUPS);
+
+	grp = &client_groups[num_groups];
+	memset(grp, 0, sizeof(ClientGroup));
+	grp->nclients = 1;
+	grp->nthreads = 1;
+	grp->sequential = false;
+	grp->rate = 0.0;
+	grp->throttle_delay = 0.0;
+	initStats(&grp->stats, 0);
+
+	copy = pg_strdup(spec);
+	token = copy;
+	while (token != NULL && *token != '\0')
+	{
+		char	   *eq;
+		char	   *key;
+		char	   *val;
+
+		next = strchr(token, ',');
+		if (next != NULL)
+			*next++ = '\0';
+
+		eq = strchr(token, '=');
+		if (eq == NULL || eq == token || *(eq + 1) == '\0')
+			pg_fatal("invalid --group specification: \"%s\"", spec);
+
+		*eq = '\0';
+		key = token;
+		val = eq + 1;
+
+		if (strcmp(key, "name") == 0)
+		{
+			pg_free(grp->name);
+			grp->name = pg_strdup(val);
+		}
+		else if (strcmp(key, "clients") == 0)
+		{
+			if (!option_parse_int(val, "--group clients", 1, INT_MAX,
+								  &grp->nclients))
+				exit(1);
+		}
+		else if (strcmp(key, "threads") == 0)
+		{
+			if (!option_parse_int(val, "--group threads", 1, INT_MAX,
+								  &grp->nthreads))
+				exit(1);
+		}
+		else if (strcmp(key, "file") == 0)
+		{
+			char	   *script = NULL;
+			int			weight = parseScriptWeight(val, &script);
+			int			idx = num_scripts;
+
+			if (grp->num_scripts >= 128)
+				pg_fatal("at most 128 scripts are allowed per group");
+			process_file(script, weight);
+			grp->script_indices[grp->num_scripts++] = idx;
+			grp->total_weight += weight;
+		}
+		else if (strcmp(key, "builtin") == 0)
+		{
+			char	   *script = NULL;
+			int			weight = parseScriptWeight(val, &script);
+			int			idx = num_scripts;
+
+			if (grp->num_scripts >= 128)
+				pg_fatal("at most 128 scripts are allowed per group");
+			process_builtin(findBuiltin(script), weight);
+			pg_free(script);
+			grp->script_indices[grp->num_scripts++] = idx;
+			grp->total_weight += weight;
+			*internal_script_used = true;
+		}
+		else if (strcmp(key, "sequential") == 0)
+		{
+			if (pg_strcasecmp(val, "true") == 0 ||
+				strcmp(val, "1") == 0 ||
+				pg_strcasecmp(val, "on") == 0)
+				grp->sequential = true;
+			else if (pg_strcasecmp(val, "false") == 0 ||
+					 strcmp(val, "0") == 0 ||
+					 pg_strcasecmp(val, "off") == 0)
+				grp->sequential = false;
+			else
+				pg_fatal("invalid sequential value in --group: \"%s\"", val);
+		}
+		else if (strcmp(key, "rate") == 0)
+		{
+			double		r = atof(val);
+
+			if (r <= 0.0)
+				pg_fatal("invalid rate limit in --group: \"%s\"", val);
+			grp->rate = r;
+		}
+		else
+			pg_fatal("unrecognized key \"%s\" in --group specification", key);
+
+		token = next;
+	}
+
+	pg_free(copy);
+
+	if (grp->name == NULL)
+		grp->name = psprintf("group_%d", num_groups + 1);
+	if (grp->num_scripts == 0)
+		pg_fatal("--group \"%s\" must specify at least one script (file=... or builtin=...)",
+				 grp->name);
+	if (!grp->sequential && grp->total_weight == 0)
+		pg_fatal("--group \"%s\" total script weight must not be zero",
+				 grp->name);
+	if (grp->nthreads > grp->nclients)
+		grp->nthreads = grp->nclients;
+	if (grp->rate > 0.0)
+		grp->throttle_delay = (1000000.0 / grp->rate) * grp->nthreads;
+
+	num_groups++;
+}
+
+/*
+ * Parse a time-unit suffix ([us|ms|s], default ms) and return multiplier to microseconds.
+ */
+static double
+parseSlaTimeUnit(const char *unit_str, const char *spec)
+{
+	while (isspace((unsigned char) *unit_str))
+		unit_str++;
+
+	if (*unit_str == '\0' || pg_strcasecmp(unit_str, "ms") == 0)
+		return 1000.0;
+	if (pg_strcasecmp(unit_str, "us") == 0)
+		return 1.0;
+	if (pg_strcasecmp(unit_str, "s") == 0)
+		return 1000000.0;
+
+	pg_fatal("invalid unit \"%s\" in --sla specification: \"%s\"",
+			 unit_str, spec);
+	return 1000.0;
+}
+
+/*
+ * Parse an SLA specification of the form:
+ *   [scope:]<metric>(<=|>=)<val>[unit]
+ * Supported metrics:
+ *   - p<pct> (latency percentile, e.g. total:p99<=10ms, group:readers:p99<=10ms)
+ *   - avg / latency_avg (average latency)
+ *   - schedule_lag:p<pct> (schedule lag percentile, e.g. schedule_lag:p95<=1000ms)
+ *   - ontime_pct (schedule on-time percentage, e.g. ontime_pct>=95)
+ *   - recall (mean recall@K, e.g. recall>=0.95, group:readers:recall>=0.95)
+ *   - recall_p<pct> / recall:p<pct> (recall percentile, e.g. recall_p5>=0.85)
+ *   - tps / qps (throughput in transactions/queries per second, e.g. tps>=100)
+ *   - error_rate (error rate percentage, e.g. error_rate<=1.0)
+ */
+void
+parseSlaSpec(const char *spec)
+{
+	SlaRule    *rule;
+	const char *op_pos = NULL;
+	SlaOpType	op = SLA_OP_LE;
+	char	   *lhs;
+	const char *rhs;
+	char	   *target = NULL;
+	char	   *named_metric = NULL;
+	const char *metric_str = NULL;
+	char	   *endp = NULL;
+	double		val;
+
+	if (num_slas >= MAX_SLAS)
+		pg_fatal("at most %d SLA rules are allowed", MAX_SLAS);
+
+	for (const char *p = spec; *p != '\0'; p++)
+	{
+		if (p[0] == '<' && p[1] == '=')
+		{
+			op_pos = p;
+			op = SLA_OP_LE;
+			break;
+		}
+		if (p[0] == '>' && p[1] == '=')
+		{
+			op_pos = p;
+			op = SLA_OP_GE;
+			break;
+		}
+	}
+
+	if (op_pos == NULL || op_pos == spec || *(op_pos + 2) == '\0')
+		pg_fatal("invalid --sla specification: \"%s\" (expected [scope:]<metric>(<=|>=)<val>[unit])",
+				 spec);
+
+	lhs = pnstrdup(spec, op_pos - spec);
+	rhs = op_pos + 2;
+
+	/* Split lhs into target, named_metric, and metric_str, handling compound metrics with ':' */
+	if (pg_strncasecmp(lhs, "schedule_lag:p", 14) == 0)
+	{
+		target = pg_strdup("total");
+		metric_str = lhs;
+	}
+	else if (pg_strncasecmp(lhs, "recall:p", 8) == 0)
+	{
+		target = pg_strdup("total");
+		metric_str = lhs;
+	}
+	else if (pg_strncasecmp(lhs, "recall:", 7) == 0)
+	{
+		target = pg_strdup("total");
+		named_metric = pg_strdup(lhs + 7);
+		metric_str = "recall";
+	}
+	else
+	{
+		char	   *lag_pos = NULL;
+		char	   *rec_pos = NULL;
+
+		for (char *p = lhs; *p != '\0'; p++)
+		{
+			if (pg_strncasecmp(p, ":schedule_lag:p", 15) == 0)
+			{
+				lag_pos = p;
+				break;
+			}
+			if (p[0] == ':' && pg_strncasecmp(p + 1, "recall", 6) == 0)
+			{
+				char next = p[7];
+
+				if (next == '\0' || next == '_' || next == ':')
+				{
+					rec_pos = p;
+					break;
+				}
+			}
+		}
+
+		if (lag_pos != NULL)
+		{
+			target = pnstrdup(lhs, lag_pos - lhs);
+			metric_str = lag_pos + 1;
+		}
+		else if (rec_pos != NULL)
+		{
+			char	   *before = pnstrdup(lhs, rec_pos - lhs);
+			char	   *last_c = strrchr(before, ':');
+
+			metric_str = rec_pos + 1;
+
+			if (last_c != NULL)
+			{
+				if (pg_strncasecmp(before, "group:", 6) == 0)
+				{
+					char	   *second_c = strchr(before + 6, ':');
+
+					if (second_c != NULL && *(second_c + 1) != '\0')
+					{
+						target = pnstrdup(before, second_c - before);
+						named_metric = pg_strdup(second_c + 1);
+					}
+					else
+					{
+						target = pg_strdup(before);
+					}
+				}
+				else if (pg_strncasecmp(before, "script:", 7) == 0)
+				{
+					char	   *second_c = strchr(before + 7, ':');
+
+					if (second_c != NULL && *(second_c + 1) != '\0')
+					{
+						target = pnstrdup(before, second_c - before);
+						named_metric = pg_strdup(second_c + 1);
+					}
+					else
+					{
+						target = pg_strdup(before);
+					}
+				}
+				else
+				{
+					target = pnstrdup(before, last_c - before);
+					named_metric = pg_strdup(last_c + 1);
+				}
+			}
+			else
+			{
+				target = pg_strdup(before);
+				if (pg_strcasecmp(before, "total") != 0 &&
+					pg_strcasecmp(before, "all") != 0 &&
+					strcmp(before, "*") != 0)
+					named_metric = pg_strdup(before);
+			}
+			pg_free(before);
+		}
+		else
+		{
+			char	   *colon = strrchr(lhs, ':');
+
+			if (colon == NULL)
+			{
+				target = pg_strdup("total");
+				metric_str = lhs;
+			}
+			else if (colon == lhs || *(colon + 1) == '\0')
+			{
+				pg_free(lhs);
+				pg_fatal("invalid --sla specification: \"%s\"", spec);
+			}
+			else
+			{
+				target = pnstrdup(lhs, colon - lhs);
+				metric_str = colon + 1;
+			}
+		}
+	}
+
+	errno = 0;
+	val = strtod(rhs, &endp);
+	if (errno != 0 || endp == rhs)
+	{
+		pg_free(target);
+		if (named_metric != NULL)
+			pg_free(named_metric);
+		pg_free(lhs);
+		pg_fatal("invalid threshold value in --sla specification: \"%s\"", spec);
+	}
+
+	rule = &sla_rules[num_slas];
+	memset(rule, 0, sizeof(SlaRule));
+	rule->raw_spec = pg_strdup(spec);
+	rule->target = target;
+	rule->named_metric = named_metric;
+	rule->op = op;
+
+	if (pg_strncasecmp(metric_str, "schedule_lag:p", 14) == 0)
+	{
+		char	   *pct_end = NULL;
+		double		pct;
+		double		mult;
+
+		errno = 0;
+		pct = strtod(metric_str + 14, &pct_end);
+		if (errno != 0 || pct_end == metric_str + 14 || *pct_end != '\0' ||
+			pct <= 0.0 || pct > 100.0)
+			pg_fatal("invalid percentile in --sla specification: \"%s\"", spec);
+		if (val < 0.0)
+			pg_fatal("invalid threshold value in --sla specification: \"%s\"", spec);
+		mult = parseSlaTimeUnit(endp, spec);
+		rule->metric = SLA_METRIC_LAG_PCT;
+		rule->percentile = pct;
+		rule->threshold_usec = val * mult;
+		rule->threshold_val = val;
+	}
+	else if (pg_strncasecmp(metric_str, "recall_p", 8) == 0 ||
+			 pg_strncasecmp(metric_str, "recall:p", 8) == 0)
+	{
+		char	   *pct_end = NULL;
+		double		pct;
+
+		errno = 0;
+		pct = strtod(metric_str + 8, &pct_end);
+		if (errno != 0 || pct_end == metric_str + 8 || *pct_end != '\0' ||
+			pct <= 0.0 || pct > 100.0)
+			pg_fatal("invalid percentile in --sla specification: \"%s\"", spec);
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0 || val > 1.0)
+			pg_fatal("invalid recall threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_RECALL_PCT;
+		rule->percentile = pct;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "recall") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0 || val > 1.0)
+			pg_fatal("invalid recall threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_RECALL_AVG;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "ontime_pct") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp == '%')
+			endp++;
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0 || val > 100.0)
+			pg_fatal("invalid ontime_pct threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_ONTIME_PCT;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "tps") == 0 ||
+			 pg_strcasecmp(metric_str, "qps") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val <= 0.0)
+			pg_fatal("invalid tps/qps threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_TPS;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "error_rate") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp == '%')
+			endp++;
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0 || val > 100.0)
+			pg_fatal("invalid error_rate threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_ERROR_RATE;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "validation_failures") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0)
+			pg_fatal("invalid validation_failures threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_VALIDATION_FAILURES;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "validation_pct") == 0)
+	{
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp == '%')
+			endp++;
+		while (isspace((unsigned char) *endp))
+			endp++;
+		if (*endp != '\0' || val < 0.0 || val > 100.0)
+			pg_fatal("invalid validation_pct threshold in --sla specification: \"%s\"", spec);
+		rule->metric = SLA_METRIC_VALIDATION_PCT;
+		rule->threshold_val = val;
+	}
+	else if (pg_strcasecmp(metric_str, "avg") == 0 ||
+			 pg_strcasecmp(metric_str, "latency_avg") == 0)
+	{
+		double		mult;
+
+		if (val <= 0.0)
+			pg_fatal("invalid threshold value in --sla specification: \"%s\"", spec);
+		mult = parseSlaTimeUnit(endp, spec);
+		rule->metric = SLA_METRIC_LATENCY_AVG;
+		rule->threshold_usec = val * mult;
+		rule->threshold_val = val;
+	}
+	else if (metric_str[0] == 'p' || metric_str[0] == 'P')
+	{
+		char	   *pct_end = NULL;
+		double		pct;
+		double		mult;
+
+		errno = 0;
+		pct = strtod(metric_str + 1, &pct_end);
+		if (errno != 0 || pct_end == metric_str + 1 || *pct_end != '\0' ||
+			pct <= 0.0 || pct > 100.0)
+			pg_fatal("invalid percentile in --sla specification: \"%s\"", spec);
+		if (val <= 0.0)
+			pg_fatal("invalid threshold value in --sla specification: \"%s\"", spec);
+		mult = parseSlaTimeUnit(endp, spec);
+		rule->metric = SLA_METRIC_LATENCY_PCT;
+		rule->percentile = pct;
+		rule->threshold_usec = val * mult;
+		rule->threshold_val = val;
+	}
+	else
+	{
+		pg_fatal("invalid --sla specification: \"%s\"", spec);
+	}
+
+	num_slas++;
+	pg_free(lhs);
+}
+
+
+/*
+ * Set up a random seed according to seed parameter (NULL means default),
+ * and initialize base_random_sequence for use in initializing other sequences.
+ */
+bool
+set_random_seed(const char *seed)
+{
+	uint64		iseed;
+
+	if (seed == NULL || strcmp(seed, "time") == 0)
+	{
+		/* rely on current time */
+		iseed = pg_time_now();
+	}
+	else if (strcmp(seed, "rand") == 0)
+	{
+		/* use some "strong" random source */
+		if (!pg_strong_random(&iseed, sizeof(iseed)))
+		{
+			pg_log_error("could not generate random seed");
+			return false;
+		}
+	}
+	else
+	{
+		char		garbage;
+
+		if (sscanf(seed, "%" SCNu64 "%c", &iseed, &garbage) != 1)
+		{
+			pg_log_error("unrecognized random seed option \"%s\"", seed);
+			pg_log_error_detail("Expecting an unsigned integer, \"time\" or \"rand\".");
+			return false;
+		}
+	}
+
+	if (seed != NULL)
+		pg_log_info("setting random seed to %" PRIu64, iseed);
+
+	random_seed = iseed;
+
+	/* Initialize base_random_sequence using seed */
+	pg_prng_seed(&base_random_sequence, iseed);
+
+	return true;
+}
+
+int
+main(int argc, char **argv)
+{
+	static struct option long_options[] = {
+		/* systematic long/short named options */
+		{"builtin", required_argument, NULL, 'b'},
+		{"client", required_argument, NULL, 'c'},
+		{"connect", no_argument, NULL, 'C'},
+		{"dbname", required_argument, NULL, 'd'},
+		{"define", required_argument, NULL, 'D'},
+		{"file", required_argument, NULL, 'f'},
+		{"fillfactor", required_argument, NULL, 'F'},
+		{"host", required_argument, NULL, 'h'},
+		{"initialize", no_argument, NULL, 'i'},
+		{"init-steps", required_argument, NULL, 'I'},
+		{"jobs", required_argument, NULL, 'j'},
+		{"log", no_argument, NULL, 'l'},
+		{"latency-limit", required_argument, NULL, 'L'},
+		{"no-vacuum", no_argument, NULL, 'n'},
+		{"port", required_argument, NULL, 'p'},
+		{"progress", required_argument, NULL, 'P'},
+		{"protocol", required_argument, NULL, 'M'},
+		{"quiet", no_argument, NULL, 'q'},
+		{"report-per-command", no_argument, NULL, 'r'},
+		{"rate", required_argument, NULL, 'R'},
+		{"scale", required_argument, NULL, 's'},
+		{"select-only", no_argument, NULL, 'S'},
+		{"skip-some-updates", no_argument, NULL, 'N'},
+		{"time", required_argument, NULL, 'T'},
+		{"transactions", required_argument, NULL, 't'},
+		{"username", required_argument, NULL, 'U'},
+		{"vacuum-all", no_argument, NULL, 'v'},
+		/* long-named only options */
+		{"unlogged-tables", no_argument, NULL, 1},
+		{"tablespace", required_argument, NULL, 2},
+		{"index-tablespace", required_argument, NULL, 3},
+		{"sampling-rate", required_argument, NULL, 4},
+		{"aggregate-interval", required_argument, NULL, 5},
+		{"progress-timestamp", no_argument, NULL, 6},
+		{"log-prefix", required_argument, NULL, 7},
+		{"foreign-keys", no_argument, NULL, 8},
+		{"random-seed", required_argument, NULL, 9},
+		{"show-script", required_argument, NULL, 10},
+		{"partitions", required_argument, NULL, 11},
+		{"partition-method", required_argument, NULL, 12},
+		{"failures-detailed", no_argument, NULL, 13},
+		{"max-tries", required_argument, NULL, 14},
+		{"verbose-errors", no_argument, NULL, 15},
+		{"exit-on-abort", no_argument, NULL, 16},
+		{"debug", no_argument, NULL, 17},
+		{"continue-on-error", no_argument, NULL, 18},
+		{"group", required_argument, NULL, 19},
+		{"sla", required_argument, NULL, 20},
+		{"json-report", required_argument, NULL, 21},
+		{"dataset", required_argument, NULL, 22},
+		{"vector-dataset", required_argument, NULL, 23},
+		{"copy-dataset", required_argument, NULL, 24},
+		{"tcr", required_argument, NULL, 25},
+		{"replay-speed", required_argument, NULL, 26},
+		{"reservoir", required_argument, NULL, 27},
+		{"max-concurrent-sessions", required_argument, NULL, 28},
+		{"ontime-threshold", required_argument, NULL, 29},
+		{"replay", required_argument, NULL, 30},
+		{"vector-base", required_argument, NULL, 31},
+		{"ground-truth-table", required_argument, NULL, 32},
+		{"config", required_argument, NULL, 33},
+		{"dump-config", required_argument, NULL, 34},
+		{"log-db", required_argument, NULL, 35},
+		{"log-db-unlogged", optional_argument, NULL, 36},
+		{"log-db-mode", required_argument, NULL, 37},
+		{"log-db-schema", required_argument, NULL, 38},
+		{"log-db-index", no_argument, NULL, 39},
+		{"run-label", required_argument, NULL, 40},
+		{NULL, 0, NULL, 0}
+	};
+
+	int			c;
+	bool		is_init_mode = false;	/* initialize mode? */
+	int			optindex;
+
+	bool		benchmarking_option_set = false;
+	bool		initialization_option_set = false;
+	bool		jobs_option_set = false;
+	bool		cli_nxacts_set = false;
+	bool		cli_duration_set = false;
+	bool		cli_clients_set = false;
+	bool		cli_threads_set = false;
+	char	   *dump_config_file = NULL;
+
+	CState	   *state;			/* status of clients */
+	TState	   *threads;		/* array of thread */
+
+	pg_time_usec_t
+				start_time,		/* start up time */
+				bench_start = 0,	/* first recorded benchmarking time */
+				conn_total_duration;	/* cumulated connection time in
+										 * threads */
+	int64		latency_late = 0;
+	StatsData	stats;
+	int			weight;
+
+	int			i;
+	int			nclients_dealt;
+
+#ifdef HAVE_GETRLIMIT
+	struct rlimit rlim;
+#endif
+
+	PGconn	   *con;
+	char	   *env;
+
+	int			exit_code = 0;
+	struct timeval tv;
+
+	/* initialize timing infrastructure (required for INSTR_* calls) */
+	pg_initialize_timing();
+
+	/*
+	 * Record difference between Unix time and instr_time time.  We'll use
+	 * this for logging and aggregation.
+	 */
+	gettimeofday(&tv, NULL);
+	epoch_shift = tv.tv_sec * INT64CONST(1000000) + tv.tv_usec - pg_time_now();
+
+
+	pg_logging_init(argv[0]);
+	progname = get_progname(argv[0]);
+
+	if (argc > 1)
+	{
+		if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-?") == 0)
+		{
+			usage();
+			exit(0);
+		}
+		if (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-V") == 0)
+		{
+			puts("pgbench (PostgreSQL) " PG_VERSION);
+			exit(0);
+		}
+	}
+
+	state = pg_malloc0_object(CState);
+
+	/* set random seed early, because it may be used while parsing scripts. */
+	if (!set_random_seed(getenv("PGBENCH_RANDOM_SEED")))
+		pg_fatal("error while setting random seed from PGBENCH_RANDOM_SEED environment variable");
+
+	/*
+	 * Pre-scan argv for -i/--initialize, --dump-config, and --config so that
+	 * configuration files are loaded before CLI option overrides regardless
+	 * of argument ordering on the command line.
+	 */
+	{
+		bool		has_dump_config = false;
+
+		for (i = 1; i < argc; i++)
+		{
+			if (strcmp(argv[i], "--") == 0)
+				break;
+			if (strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--initialize") == 0)
+				is_init_mode = true;
+			else if (strncmp(argv[i], "--dump-config=", 14) == 0 ||
+					 strcmp(argv[i], "--dump-config") == 0)
+				has_dump_config = true;
+		}
+		for (i = 1; i < argc; i++)
+		{
+			if (strcmp(argv[i], "--") == 0)
+				break;
+			if (strncmp(argv[i], "--config=", 9) == 0)
+			{
+				if (argv[i][9] == '\0')
+					pg_fatal("option --config requires an argument");
+				loadConfigFile(argv[i] + 9, is_init_mode && !has_dump_config,
+							   &state[0].variables,
+							   &benchmarking_option_set,
+							   &initialization_option_set,
+							   &jobs_option_set);
+			}
+			else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc)
+			{
+				loadConfigFile(argv[i + 1], is_init_mode && !has_dump_config,
+							   &state[0].variables,
+							   &benchmarking_option_set,
+							   &initialization_option_set,
+							   &jobs_option_set);
+				i++;
+			}
+		}
+	}
+
+	while ((c = getopt_long(argc, argv, "b:c:Cd:D:f:F:h:iI:j:lL:M:nNp:P:qrR:s:St:T:U:v", long_options, &optindex)) != -1)
+	{
+		char	   *script;
+
+		switch (c)
+		{
+			case 'b':
+				if (strcmp(optarg, "list") == 0)
+				{
+					listAvailableScripts();
+					exit(0);
+				}
+				if (config_scripts_loaded)
+					clearConfigScriptsAndGroups();
+				weight = parseScriptWeight(optarg, &script);
+				process_builtin(findBuiltin(script), weight);
+				benchmarking_option_set = true;
+				internal_script_used = true;
+				break;
+			case 'c':
+				benchmarking_option_set = true;
+				cli_clients_set = true;
+				if (!option_parse_int(optarg, "-c/--client", 1, INT_MAX,
+									  &nclients))
+				{
+					exit(1);
+				}
+#ifdef HAVE_GETRLIMIT
+				if (getrlimit(RLIMIT_NOFILE, &rlim) == -1)
+					pg_fatal("getrlimit failed: %m");
+
+				if (rlim.rlim_max < nclients + 3)
+				{
+					pg_log_error("need at least %d open files, but system limit is %ld",
+								 nclients + 3, (long) rlim.rlim_max);
+					pg_log_error_hint("Reduce number of clients, or use limit/ulimit to increase the system limit.");
+					exit(1);
+				}
+
+				if (rlim.rlim_cur < nclients + 3)
+				{
+					rlim.rlim_cur = nclients + 3;
+					if (setrlimit(RLIMIT_NOFILE, &rlim) == -1)
+					{
+						pg_log_error("need at least %d open files, but couldn't raise the limit: %m",
+									 nclients + 3);
+						pg_log_error_hint("Reduce number of clients, or use limit/ulimit to increase the system limit.");
+						exit(1);
+					}
+				}
+#endif							/* HAVE_GETRLIMIT */
+				break;
+			case 'C':
+				benchmarking_option_set = true;
+				is_connect = true;
+				break;
+			case 'd':
+				dbName = pg_strdup(optarg);
+				break;
+			case 'D':
+				{
+					char	   *p;
+
+					benchmarking_option_set = true;
+
+					if ((p = strchr(optarg, '=')) == NULL || p == optarg || *(p + 1) == '\0')
+						pg_fatal("invalid variable definition: \"%s\"", optarg);
+
+					*p++ = '\0';
+					if (!putVariable(&state[0].variables, "option", optarg, p))
+						exit(1);
+					if (!putVariable(&config_variables, "option", optarg, p))
+						exit(1);
+				}
+				break;
+			case 'f':
+				if (config_scripts_loaded)
+					clearConfigScriptsAndGroups();
+				weight = parseScriptWeight(optarg, &script);
+				process_file(script, weight);
+				benchmarking_option_set = true;
+				break;
+			case 'F':
+				initialization_option_set = true;
+				if (!option_parse_int(optarg, "-F/--fillfactor", 10, 100,
+									  &fillfactor))
+					exit(1);
+				break;
+			case 'h':
+				pghost = pg_strdup(optarg);
+				break;
+			case 'i':
+				is_init_mode = true;
+				break;
+			case 'I':
+				pg_free(initialize_steps);
+				initialize_steps = pg_strdup(optarg);
+				checkInitSteps(initialize_steps);
+				initialization_option_set = true;
+				break;
+			case 'j':			/* jobs */
+				jobs_option_set = true;
+				cli_threads_set = true;
+				if (!option_parse_int(optarg, "-j/--jobs", 1, INT_MAX,
+									  &nthreads))
+				{
+					exit(1);
+				}
+				copy_nthreads = nthreads;
+				break;
+			case 'l':
+				benchmarking_option_set = true;
+				use_log = true;
+				break;
+			case 'L':
+				{
+					double		limit_ms = atof(optarg);
+
+					if (limit_ms <= 0.0)
+						pg_fatal("invalid latency limit: \"%s\"", optarg);
+					benchmarking_option_set = true;
+					latency_limit = (int64) (limit_ms * 1000);
+				}
+				break;
+			case 'M':
+				benchmarking_option_set = true;
+				for (querymode = 0; querymode < NUM_QUERYMODE; querymode++)
+					if (strcmp(optarg, QUERYMODE[querymode]) == 0)
+						break;
+				if (querymode >= NUM_QUERYMODE)
+					pg_fatal("invalid query mode (-M): \"%s\"", optarg);
+				break;
+			case 'n':
+				is_no_vacuum = true;
+				break;
+			case 'N':
+				if (config_scripts_loaded)
+					clearConfigScriptsAndGroups();
+				process_builtin(findBuiltin("simple-update"), 1);
+				benchmarking_option_set = true;
+				internal_script_used = true;
+				break;
+			case 'p':
+				pgport = pg_strdup(optarg);
+				break;
+			case 'P':
+				benchmarking_option_set = true;
+				if (!option_parse_int(optarg, "-P/--progress", 1, INT_MAX,
+									  &progress))
+					exit(1);
+				break;
+			case 'q':
+				initialization_option_set = true;
+				use_quiet = true;
+				break;
+			case 'r':
+				benchmarking_option_set = true;
+				report_per_command = true;
+				break;
+			case 'R':
+				{
+					/* get a double from the beginning of option value */
+					double		throttle_value = atof(optarg);
+
+					benchmarking_option_set = true;
+
+					if (throttle_value <= 0.0)
+						pg_fatal("invalid rate limit: \"%s\"", optarg);
+					/* Invert rate limit into per-transaction delay in usec */
+					throttle_delay = 1000000.0 / throttle_value;
+				}
+				break;
+			case 's':
+				scale_given = true;
+				if (!option_parse_int(optarg, "-s/--scale", 1, INT_MAX,
+									  &scale))
+					exit(1);
+				break;
+			case 'S':
+				if (config_scripts_loaded)
+					clearConfigScriptsAndGroups();
+				process_builtin(findBuiltin("select-only"), 1);
+				benchmarking_option_set = true;
+				internal_script_used = true;
+				break;
+			case 't':
+				benchmarking_option_set = true;
+				cli_nxacts_set = true;
+				if (!cli_duration_set)
+					duration = 0;
+				if (!option_parse_int(optarg, "-t/--transactions", 1, INT_MAX,
+									  &nxacts))
+					exit(1);
+				break;
+			case 'T':
+				benchmarking_option_set = true;
+				cli_duration_set = true;
+				if (!cli_nxacts_set)
+					nxacts = 0;
+				if (!option_parse_int(optarg, "-T/--time", 1, INT_MAX,
+									  &duration))
+					exit(1);
+				break;
+			case 'U':
+				username = pg_strdup(optarg);
+				break;
+			case 'v':
+				benchmarking_option_set = true;
+				do_vacuum_accounts = true;
+				break;
+			case 1:				/* unlogged-tables */
+				initialization_option_set = true;
+				unlogged_tables = true;
+				break;
+			case 2:				/* tablespace */
+				initialization_option_set = true;
+				tablespace = pg_strdup(optarg);
+				break;
+			case 3:				/* index-tablespace */
+				initialization_option_set = true;
+				index_tablespace = pg_strdup(optarg);
+				break;
+			case 4:				/* sampling-rate */
+				benchmarking_option_set = true;
+				sample_rate = atof(optarg);
+				if (sample_rate <= 0.0 || sample_rate > 1.0)
+					pg_fatal("invalid sampling rate: \"%s\"", optarg);
+				break;
+			case 5:				/* aggregate-interval */
+				benchmarking_option_set = true;
+				if (!option_parse_int(optarg, "--aggregate-interval", 1, INT_MAX,
+									  &agg_interval))
+					exit(1);
+				break;
+			case 6:				/* progress-timestamp */
+				progress_timestamp = true;
+				benchmarking_option_set = true;
+				break;
+			case 7:				/* log-prefix */
+				benchmarking_option_set = true;
+				logfile_prefix = pg_strdup(optarg);
+				break;
+			case 8:				/* foreign-keys */
+				initialization_option_set = true;
+				foreign_keys = true;
+				break;
+			case 9:				/* random-seed */
+				benchmarking_option_set = true;
+				if (!set_random_seed(optarg))
+					pg_fatal("error while setting random seed from --random-seed option");
+				random_seed_set = true;
+				break;
+			case 10:			/* list */
+				{
+					const BuiltinScript *s = findBuiltin(optarg);
+
+					fprintf(stderr, "-- %s: %s\n%s\n", s->name, s->desc, s->script);
+					exit(0);
+				}
+				break;
+			case 11:			/* partitions */
+				initialization_option_set = true;
+				if (!option_parse_int(optarg, "--partitions", 0, INT_MAX,
+									  &partitions))
+					exit(1);
+				break;
+			case 12:			/* partition-method */
+				initialization_option_set = true;
+				if (pg_strcasecmp(optarg, "range") == 0)
+					partition_method = PART_RANGE;
+				else if (pg_strcasecmp(optarg, "hash") == 0)
+					partition_method = PART_HASH;
+				else
+					pg_fatal("invalid partition method, expecting \"range\" or \"hash\", got: \"%s\"",
+							 optarg);
+				break;
+			case 13:			/* failures-detailed */
+				benchmarking_option_set = true;
+				failures_detailed = true;
+				break;
+			case 14:			/* max-tries */
+				{
+					int32		max_tries_arg = atoi(optarg);
+
+					if (max_tries_arg < 0)
+						pg_fatal("invalid number of maximum tries: \"%s\"", optarg);
+
+					benchmarking_option_set = true;
+					max_tries = (uint32) max_tries_arg;
+				}
+				break;
+			case 15:			/* verbose-errors */
+				benchmarking_option_set = true;
+				verbose_errors = true;
+				break;
+			case 16:			/* exit-on-abort */
+				benchmarking_option_set = true;
+				exit_on_abort = true;
+				break;
+			case 17:			/* debug */
+				pg_logging_increase_verbosity();
+				break;
+			case 18:			/* continue-on-error */
+				benchmarking_option_set = true;
+				continue_on_error = true;
+				break;
+			case 19:			/* group */
+				if (config_scripts_loaded)
+					clearConfigScriptsAndGroups();
+				benchmarking_option_set = true;
+				parseGroupSpec(optarg, &internal_script_used);
+				break;
+			case 20:			/* sla */
+				benchmarking_option_set = true;
+				parseSlaSpec(optarg);
+				break;
+			case 21:			/* json-report */
+				benchmarking_option_set = true;
+				pg_free(json_report_file);
+				json_report_file = pg_strdup(optarg);
+				break;
+			case 22:			/* dataset */
+			case 23:			/* vector-dataset */
+				parseDatasetSpec(optarg);
+				break;
+			case 24:			/* copy-dataset */
+				registerCopyDatasetSpec(optarg);
+				break;
+			case 25:			/* tcr */
+			case 26:			/* replay-speed */
+				{
+					char	   *endp = NULL;
+					double		spd;
+
+					benchmarking_option_set = true;
+					errno = 0;
+					spd = strtod(optarg, &endp);
+					if (errno != 0 || endp == optarg || (endp && *endp != '\0') ||
+						spd <= 0.0)
+						pg_fatal("invalid replay speed / TCR value: \"%s\"", optarg);
+					replay_speed = spd;
+				}
+				break;
+			case 27:			/* reservoir */
+				benchmarking_option_set = true;
+				parseReservoirSpec(optarg);
+				break;
+			case 28:			/* max-concurrent-sessions */
+				benchmarking_option_set = true;
+				if (!option_parse_int(optarg, "--max-concurrent-sessions", 1, INT_MAX,
+									  &max_concurrent_sessions))
+					exit(1);
+				break;
+			case 29:			/* ontime-threshold */
+				{
+					char	   *endp = NULL;
+					double		th;
+
+					benchmarking_option_set = true;
+					errno = 0;
+					th = strtod(optarg, &endp);
+					while (endp && isspace((unsigned char) *endp))
+						endp++;
+					if (endp && pg_strcasecmp(endp, "ms") == 0)
+						endp += 2;
+					if (errno != 0 || endp == optarg || (endp && *endp != '\0') ||
+						th < 0.0)
+						pg_fatal("invalid on-time threshold value: \"%s\"", optarg);
+					ontime_threshold_ms = th;
+				}
+				break;
+			case 30:			/* replay */
+				{
+					char	   *ds_spec;
+
+					benchmarking_option_set = true;
+					pg_free(replay_trace_file);
+					replay_trace_file = pg_strdup(optarg);
+					ds_spec = psprintf("replay=csv:%s", replay_trace_file);
+					parseDatasetSpec(ds_spec);
+					pg_free(ds_spec);
+				}
+				break;
+			case 31:			/* vector-base */
+				benchmarking_option_set = true;
+				parseVectorBaseSpec(optarg);
+				break;
+			case 32:			/* ground-truth-table */
+				benchmarking_option_set = true;
+				parseGroundTruthTableSpec(optarg);
+				break;
+			case 33:			/* config (already loaded in pre-pass) */
+				break;
+			case 34:			/* dump-config */
+				pg_free(dump_config_file);
+				dump_config_file = pg_strdup(optarg);
+				break;
+			case 35:			/* log-db */
+				benchmarking_option_set = true;
+				pg_free(log_db_conninfo);
+				log_db_conninfo = pg_strdup(optarg);
+				break;
+			case 36:			/* log-db-unlogged */
+				{
+					const char *val = optarg;
+
+					benchmarking_option_set = true;
+					if (val == NULL && optind < argc &&
+						(pg_strcasecmp(argv[optind], "stream") == 0 ||
+						 pg_strcasecmp(argv[optind], "all") == 0 ||
+						 pg_strcasecmp(argv[optind], "off") == 0 ||
+						 pg_strcasecmp(argv[optind], "true") == 0 ||
+						 pg_strcasecmp(argv[optind], "false") == 0))
+					{
+						val = argv[optind++];
+					}
+					parseLogDbUnloggedMode(val);
+				}
+				break;
+			case 37:			/* log-db-mode */
+				benchmarking_option_set = true;
+				parseLogDbMode(optarg);
+				break;
+			case 38:			/* log-db-schema */
+				benchmarking_option_set = true;
+				if (optarg[0] == '\0')
+					pg_fatal("--log-db-schema must not be empty");
+				pg_free(log_db_schema);
+				log_db_schema = pg_strdup(optarg);
+				break;
+			case 39:			/* log-db-index */
+				benchmarking_option_set = true;
+				log_db_index = true;
+				break;
+			case 40:			/* run-label */
+				benchmarking_option_set = true;
+				pg_free(run_label);
+				run_label = pg_strdup(optarg);
+				break;
+			default:
+				/* getopt_long already emitted a complaint */
+				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				exit(1);
+		}
+	}
+
+	if (num_groups == 1)
+	{
+		if (cli_clients_set)
+			client_groups[0].nclients = nclients;
+		if (cli_threads_set)
+			client_groups[0].nthreads = nthreads;
+		if (client_groups[0].nthreads > client_groups[0].nclients)
+			client_groups[0].nthreads = client_groups[0].nclients;
+		if (client_groups[0].rate > 0.0)
+			client_groups[0].throttle_delay = (1000000.0 / client_groups[0].rate) * client_groups[0].nthreads;
+	}
+	else if (num_groups > 1 && config_scripts_loaded)
+	{
+		if (cli_clients_set)
+		{
+			int			old_total = 0;
+
+			for (i = 0; i < num_groups; i++)
+				old_total += client_groups[i].nclients;
+
+			if (old_total > 0 && nclients != old_total)
+			{
+				int			assigned = 0;
+				int			max_idx = 0;
+				int			max_orig = 0;
+
+				for (i = 0; i < num_groups; i++)
+				{
+					int			orig = client_groups[i].nclients;
+					int			scaled = (int) lround((double) orig * nclients / old_total);
+
+					if (scaled < 1)
+						scaled = 1;
+					if (orig > max_orig)
+					{
+						max_orig = orig;
+						max_idx = i;
+					}
+					client_groups[i].nclients = scaled;
+					assigned += scaled;
+				}
+				if (assigned != nclients && client_groups[max_idx].nclients + (nclients - assigned) >= 1)
+					client_groups[max_idx].nclients += (nclients - assigned);
+			}
+		}
+		if (cli_threads_set)
+		{
+			int			old_threads = 0;
+
+			for (i = 0; i < num_groups; i++)
+				old_threads += client_groups[i].nthreads;
+
+			if (old_threads > 0 && nthreads != old_threads)
+			{
+				int			assigned = 0;
+				int			max_idx = 0;
+				int			max_orig = 0;
+
+				for (i = 0; i < num_groups; i++)
+				{
+					int			orig = client_groups[i].nthreads;
+					int			scaled = (int) lround((double) orig * nthreads / old_threads);
+
+					if (scaled < 1)
+						scaled = 1;
+					if (orig > max_orig)
+					{
+						max_orig = orig;
+						max_idx = i;
+					}
+					client_groups[i].nthreads = scaled;
+					assigned += scaled;
+				}
+				if (assigned != nthreads && client_groups[max_idx].nthreads + (nthreads - assigned) >= 1)
+					client_groups[max_idx].nthreads += (nthreads - assigned);
+			}
+		}
+		for (i = 0; i < num_groups; i++)
+		{
+			if (client_groups[i].nthreads > client_groups[i].nclients)
+				client_groups[i].nthreads = client_groups[i].nclients;
+			if (client_groups[i].rate > 0.0)
+				client_groups[i].throttle_delay = (1000000.0 / client_groups[i].rate) * client_groups[i].nthreads;
+		}
+	}
+
+	if (num_groups > 0)
+	{
+		nclients = 0;
+		nthreads = 0;
+		for (i = 0; i < num_groups; i++)
+		{
+			nclients += client_groups[i].nclients;
+			nthreads += client_groups[i].nthreads;
+		}
+#ifdef HAVE_GETRLIMIT
+		if (getrlimit(RLIMIT_NOFILE, &rlim) == -1)
+			pg_fatal("getrlimit failed: %m");
+
+		if (rlim.rlim_max < nclients + 3)
+		{
+			pg_log_error("need at least %d open files, but system limit is %ld",
+						 nclients + 3, (long) rlim.rlim_max);
+			pg_log_error_hint("Reduce number of clients, or use limit/ulimit to increase the system limit.");
+			exit(1);
+		}
+
+		if (rlim.rlim_cur < nclients + 3)
+		{
+			rlim.rlim_cur = nclients + 3;
+			if (setrlimit(RLIMIT_NOFILE, &rlim) == -1)
+			{
+				pg_log_error("need at least %d open files, but couldn't raise the limit: %m",
+							 nclients + 3);
+				pg_log_error_hint("Reduce number of clients, or use limit/ulimit to increase the system limit.");
+				exit(1);
+			}
+		}
+#endif							/* HAVE_GETRLIMIT */
+	}
+
+	/* set default script if none (unless running standalone --copy-dataset) */
+	if (num_scripts == 0 && !is_init_mode && num_copy_dataset_specs == 0)
+	{
+		if (replay_trace_file != NULL)
+		{
+			PgBenchDataset *rds = findDataset("replay");
+
+			querymode = QUERY_SIMPLE;
+			process_replay_builtin(1);
+			if (rds != NULL && rds->total_rows > 0 && nxacts <= 0 && duration <= 0)
+				nxacts = (int) ((rds->total_rows + nclients - 1) / nclients);
+		}
+		else
+		{
+			process_builtin(findBuiltin("tpcb-like"), 1);
+			internal_script_used = true;
+		}
+		benchmarking_option_set = true;
+	}
+
+	/* complete SQL command initialization and compute total weight */
+	for (i = 0; i < num_scripts; i++)
+	{
+		Command   **commands = sql_script[i].commands;
+
+		for (int j = 0; commands[j] != NULL; j++)
+			if (commands[j]->type == SQL_COMMAND)
+				postprocess_sql_command(commands[j]);
+
+		/* cannot overflow: weight is 32b, total_weight 64b */
+		total_weight += sql_script[i].weight;
+	}
+
+	if (total_weight == 0 && !is_init_mode && num_copy_dataset_specs == 0)
+		pg_fatal("total script weight must not be zero");
+
+	/* show per script stats if several scripts, groups, SLAs, JSON report, or --log-db are used */
+	if (num_scripts > 1 || num_groups > 0 || num_slas > 0 ||
+		json_report_file != NULL || log_db_conninfo != NULL)
+		per_script_stats = true;
+
+	/*
+	 * Don't need more threads than there are clients.  (This is not merely an
+	 * optimization; throttle_delay is calculated incorrectly below if some
+	 * threads have no clients assigned to them.)
+	 */
+	if (nthreads > nclients)
+		nthreads = nclients;
+
+	/*
+	 * Convert throttle_delay to a per-thread delay time.  Note that this
+	 * might be a fractional number of usec, but that's OK, since it's just
+	 * the center of a Poisson distribution of delays.
+	 */
+	throttle_delay *= nthreads;
+
+	if (dbName == NULL)
+	{
+		if (argc > optind)
+			dbName = argv[optind++];
+		else
+		{
+			if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
+				dbName = env;
+			else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
+				dbName = env;
+			else
+				dbName = get_user_name_or_exit(progname);
+		}
+	}
+
+	if (optind < argc)
+	{
+		pg_log_error("too many command-line arguments (first is \"%s\")",
+					 argv[optind]);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		exit(1);
+	}
+
+	if (is_init_mode)
+	{
+		if (dump_config_file != NULL)
+		{
+			dumpConfigFile(dump_config_file);
+			exit(0);
+		}
+
+		if (num_config_init_steps > 0)
+		{
+			runConfigInitSteps(&state[0].variables);
+			exit(0);
+		}
+
+		if (benchmarking_option_set || (jobs_option_set && num_copy_dataset_specs == 0))
+			pg_fatal("some of the specified options cannot be used in initialization (-i) mode");
+
+		if (partitions == 0 && partition_method != PART_NONE)
+			pg_fatal("--partition-method requires greater than zero --partitions");
+
+		/* set default method */
+		if (partitions > 0 && partition_method == PART_NONE)
+			partition_method = PART_RANGE;
+
+		if (initialize_steps == NULL)
+			initialize_steps = pg_strdup(DEFAULT_INIT_STEPS);
+
+		if (is_no_vacuum)
+		{
+			/* Remove any vacuum step in initialize_steps */
+			char	   *p;
+
+			while ((p = strchr(initialize_steps, 'v')) != NULL)
+				*p = ' ';
+		}
+
+		if (foreign_keys)
+		{
+			/* Add 'f' to end of initialize_steps, if not already there */
+			if (strchr(initialize_steps, 'f') == NULL)
+			{
+				initialize_steps = (char *)
+					pg_realloc(initialize_steps,
+							   strlen(initialize_steps) + 2);
+				strcat(initialize_steps, "f");
+			}
+		}
+
+		runInitSteps(initialize_steps);
+		if (num_copy_dataset_specs > 0)
+		{
+			int			saved_nthreads = nthreads;
+
+			con = doConnect();
+			if (con == NULL)
+				pg_fatal("could not create connection for setup");
+			nthreads = copy_nthreads;
+			runRegisteredCopyDatasets(con);
+			nthreads = saved_nthreads;
+			PQfinish(con);
+		}
+		exit(0);
+	}
+	else
+	{
+		if (initialization_option_set)
+			pg_fatal("some of the specified options cannot be used in benchmarking mode");
+	}
+
+	if (nxacts > 0 && duration > 0)
+		pg_fatal("specify either a number of transactions (-t) or a duration (-T), not both");
+
+	/* Use DEFAULT_NXACTS if neither nxacts nor duration is specified. */
+	if (nxacts <= 0 && duration <= 0)
+		nxacts = DEFAULT_NXACTS;
+
+	/* --sampling-rate may be used only with -l */
+	if (sample_rate > 0.0 && !use_log)
+		pg_fatal("log sampling (--sampling-rate) is allowed only when logging transactions (-l)");
+
+	/* --sampling-rate may not be used with --aggregate-interval */
+	if (sample_rate > 0.0 && agg_interval > 0)
+		pg_fatal("log sampling (--sampling-rate) and aggregation (--aggregate-interval) cannot be used at the same time");
+
+	if (agg_interval > 0 && !use_log)
+		pg_fatal("log aggregation is allowed only when actually logging transactions");
+
+	if (!use_log && logfile_prefix)
+		pg_fatal("log file prefix (--log-prefix) is allowed only when logging transactions (-l)");
+
+	if (duration > 0 && agg_interval > duration)
+		pg_fatal("number of seconds for aggregation (%d) must not be higher than test duration (%d)", agg_interval, duration);
+
+	if (duration > 0 && agg_interval > 0 && duration % agg_interval != 0)
+		pg_fatal("duration (%d) must be a multiple of aggregation interval (%d)", duration, agg_interval);
+
+	if (progress_timestamp && progress == 0)
+		pg_fatal("--progress-timestamp is allowed only under --progress");
+
+	if (!max_tries)
+	{
+		if (!latency_limit && duration <= 0)
+			pg_fatal("an unlimited number of transaction tries can only be used with --latency-limit or a duration (-T)");
+	}
+
+	if (dump_config_file != NULL)
+	{
+		dumpConfigFile(dump_config_file);
+		exit(0);
+	}
+
+	/* Standalone --copy-dataset without any benchmark scripts */
+	if (num_copy_dataset_specs > 0 && num_scripts == 0)
+	{
+		con = doConnect();
+		if (con == NULL)
+			pg_fatal("could not create connection for setup");
+		printVersion(con);
+		nthreads = copy_nthreads;
+		runRegisteredCopyDatasets(con);
+		PQfinish(con);
+		exit(0);
+	}
+
+	/*
+	 * save main process id in the global variable because process id will be
+	 * changed after fork.
+	 */
+	main_pid = (int) getpid();
+
+	if (nclients > 1)
+	{
+		state = pg_realloc_array(state, CState, nclients);
+		memset(state + 1, 0, sizeof(CState) * (nclients - 1));
+
+		/* copy any -D switch values to all clients */
+		for (i = 1; i < nclients; i++)
+		{
+			state[i].id = i;
+			if (!copyVariables(&state[i].variables, &state[0].variables))
+				exit(1);
+		}
+	}
+	/* other CState initializations */
+	if (num_groups > 0)
+	{
+		int			c_idx = 0;
+
+		for (int g = 0; g < num_groups; g++)
+		{
+			for (int k = 0; k < client_groups[g].nclients; k++)
+			{
+				state[c_idx].group_id = g;
+				state[c_idx].stream_id = k;
+				state[c_idx].seq_counter = 0;
+				c_idx++;
+			}
+		}
+	}
+	else
+	{
+		for (i = 0; i < nclients; i++)
+		{
+			state[i].group_id = -1;
+			state[i].stream_id = i;
+			state[i].seq_counter = 0;
+		}
+	}
+
+	for (i = 0; i < nclients; i++)
+	{
+		state[i].cstack = conditional_stack_create();
+		initRandomState(&state[i].cs_func_rs);
+	}
+
+	/* opening connection... */
+	resolveHostAddrOnce();
+	con = doConnect();
+	if (con == NULL)
+		pg_fatal("could not create connection for setup");
+
+	/* report pgbench and server versions */
+	printVersion(con);
+
+	pg_log_debug("pghost: %s pgport: %s nclients: %d %s: %d dbName: %s",
+				 PQhost(con), PQport(con), nclients,
+				 duration <= 0 ? "nxacts" : "duration",
+				 duration <= 0 ? nxacts : duration, PQdb(con));
+
+	if (num_copy_dataset_specs > 0 && num_config_init_steps == 0)
+	{
+		int			saved_nthreads = nthreads;
+
+		nthreads = copy_nthreads;
+		runRegisteredCopyDatasets(con);
+		nthreads = saved_nthreads;
+	}
+
+	if (internal_script_used)
+		GetTableInfo(con, scale_given);
+
+	/*
+	 * :scale variables normally get -s or database scale, but don't override
+	 * an explicit -D switch
+	 */
+	if (lookupVariable(&state[0].variables, "scale") == NULL)
+	{
+		for (i = 0; i < nclients; i++)
+		{
+			if (!putVariableInt(&state[i].variables, "startup", "scale", scale))
+				exit(1);
+		}
+	}
+
+	/*
+	 * Define a :client_id variable that is unique per connection. But don't
+	 * override an explicit -D switch.
+	 */
+	if (lookupVariable(&state[0].variables, "client_id") == NULL)
+	{
+		for (i = 0; i < nclients; i++)
+			if (!putVariableInt(&state[i].variables, "startup", "client_id", i))
+				exit(1);
+	}
+
+	/*
+	 * Define :stream_id and :group_name variables for each client unless
+	 * overridden via -D.
+	 */
+	if (lookupVariable(&state[0].variables, "stream_id") == NULL)
+	{
+		for (i = 0; i < nclients; i++)
+			if (!putVariableInt(&state[i].variables, "startup", "stream_id",
+								state[i].stream_id))
+				exit(1);
+	}
+	if (num_groups > 0 && lookupVariable(&state[0].variables, "group_name") == NULL)
+	{
+		for (i = 0; i < nclients; i++)
+		{
+			PgBenchValue gval;
+
+			setTextValue(&gval, client_groups[state[i].group_id].name);
+			if (!putVariableValue(&state[i].variables, "startup", "group_name",
+								  &gval))
+				exit(1);
+			freeValue(&gval);
+		}
+	}
+
+	/* set default seed for hash functions */
+	if (lookupVariable(&state[0].variables, "default_seed") == NULL)
+	{
+		uint64		seed = pg_prng_uint64(&base_random_sequence);
+
+		for (i = 0; i < nclients; i++)
+			if (!putVariableInt(&state[i].variables, "startup", "default_seed",
+								(int64) seed))
+				exit(1);
+	}
+
+	/* set random seed unless overwritten */
+	if (lookupVariable(&state[0].variables, "random_seed") == NULL)
+	{
+		for (i = 0; i < nclients; i++)
+			if (!putVariableInt(&state[i].variables, "startup", "random_seed",
+								random_seed))
+				exit(1);
+	}
+
+	if (!is_no_vacuum)
+	{
+		fprintf(stderr, "starting vacuum...");
+		tryExecuteStatement(con, "vacuum pgbench_branches");
+		tryExecuteStatement(con, "vacuum pgbench_tellers");
+		tryExecuteStatement(con, "truncate pgbench_history");
+		fprintf(stderr, "end.\n");
+
+		if (do_vacuum_accounts)
+		{
+			fprintf(stderr, "starting vacuum pgbench_accounts...");
+			tryExecuteStatement(con, "vacuum analyze pgbench_accounts");
+			fprintf(stderr, "end.\n");
+		}
+	}
+	PQfinish(con);
+
+	if (log_db_conninfo != NULL)
+		logDbBootstrapAndStartRun();
+
+	/* set up thread data structures */
+	threads = pg_malloc_array(TState, nthreads);
+	nclients_dealt = 0;
+
+	if (num_groups > 0)
+	{
+		int			t_idx = 0;
+
+		for (int g = 0; g < num_groups; g++)
+		{
+			ClientGroup *grp = &client_groups[g];
+			int			grp_clients_dealt = 0;
+
+			for (int k = 0; k < grp->nthreads; k++)
+			{
+				TState	   *thread = &threads[t_idx];
+
+				thread->tid = t_idx;
+				thread->group_id = g;
+				thread->state = &state[nclients_dealt + grp_clients_dealt];
+				thread->nstate =
+					(grp->nclients - grp_clients_dealt + grp->nthreads - k - 1) /
+					(grp->nthreads - k);
+				initRandomState(&thread->ts_choose_rs);
+				initRandomState(&thread->ts_throttle_rs);
+				initRandomState(&thread->ts_sample_rs);
+				thread->logfile = NULL;
+				thread->latency_late = 0;
+				initStats(&thread->stats, 0);
+
+				grp_clients_dealt += thread->nstate;
+				t_idx++;
+			}
+			nclients_dealt += grp_clients_dealt;
+		}
+	}
+	else
+	{
+		for (i = 0; i < nthreads; i++)
+		{
+			TState	   *thread = &threads[i];
+
+			thread->tid = i;
+			thread->group_id = -1;
+			thread->state = &state[nclients_dealt];
+			thread->nstate =
+				(nclients - nclients_dealt + nthreads - i - 1) / (nthreads - i);
+			initRandomState(&thread->ts_choose_rs);
+			initRandomState(&thread->ts_throttle_rs);
+			initRandomState(&thread->ts_sample_rs);
+			thread->logfile = NULL; /* filled in later */
+			thread->latency_late = 0;
+			initStats(&thread->stats, 0);
+
+			nclients_dealt += thread->nstate;
+		}
+	}
+
+	/* all clients must be assigned to a thread */
+	Assert(nclients_dealt == nclients);
+
+	/* get start up time for the whole computation */
+	start_time = pg_time_now();
+
+	/* set alarm if duration is specified. */
+	if (duration > 0)
+		setalarm(duration);
+	if (log_db_conninfo != NULL)
+		set_abort_signals();
+
+	errno = THREAD_BARRIER_INIT(&barrier, nthreads);
+	if (errno != 0)
+		pg_fatal("could not initialize barrier: %m");
+
+	/* start all threads but thread 0 which is executed directly later */
+	for (i = 1; i < nthreads; i++)
+	{
+		TState	   *thread = &threads[i];
+
+		thread->create_time = pg_time_now();
+		errno = THREAD_CREATE(&thread->thread, threadRun, thread);
+
+		if (errno != 0)
+			pg_fatal("could not create thread: %m");
+	}
+
+	/* compute when to stop */
+	threads[0].create_time = pg_time_now();
+	if (duration > 0)
+		end_time = threads[0].create_time + (int64) 1000000 * duration;
+
+	/* run thread 0 directly */
+	(void) threadRun(&threads[0]);
+
+	/* wait for other threads and accumulate results */
+	initStats(&stats, 0);
+	conn_total_duration = 0;
+
+	for (i = 0; i < nthreads; i++)
+	{
+		TState	   *thread = &threads[i];
+
+		if (i > 0)
+			THREAD_JOIN(thread->thread);
+
+		for (int j = 0; j < thread->nstate; j++)
+			if (thread->state[j].state != CSTATE_FINISHED)
+				exit_code = 2;
+
+		/* aggregate thread level stats */
+		mergeStats(&stats, &thread->stats);
+		if (thread->group_id >= 0)
+			mergeStats(&client_groups[thread->group_id].stats, &thread->stats);
+		latency_late += thread->latency_late;
+		conn_total_duration += thread->conn_duration;
+
+		/* first recorded benchmarking start time */
+		if (bench_start == 0 || thread->bench_start < bench_start)
+			bench_start = thread->bench_start;
+	}
+
+	/*
+	 * All connections should be already closed in threadRun(), so this
+	 * disconnect_all() will be a no-op, but clean up the connections just to
+	 * be sure. We don't need to measure the disconnection delays here.
+	 */
+	disconnect_all(state, nclients);
+
+	/*
+	 * Beware that performance of short benchmarks with many threads and
+	 * possibly long transactions can be deceptive because threads do not
+	 * start and finish at the exact same time. The total duration computed
+	 * here encompasses all transactions so that tps shown is somehow slightly
+	 * underestimated.
+	 */
+	{
+		pg_time_usec_t total_time_us = pg_time_now() - bench_start;
+
+		printResults(&stats, total_time_us, conn_total_duration,
+					 bench_start - start_time, latency_late);
+
+		if (exit_code == 0 && sla_failed)
+			exit_code = 1;
+
+		if (log_db_conninfo != NULL)
+			logDbFinalizeRun(&stats, total_time_us, threads, exit_code);
+	}
+
+	THREAD_BARRIER_DESTROY(&barrier);
+
+	if (exit_code == 2)
+		pg_log_error("Run was aborted; the above results are incomplete.");
+	else if (sla_failed)
+	{
+		pg_log_error("One or more SLA compliance checks failed.");
+		exit_code = 1;
+	}
+
+	return exit_code;
+}
+

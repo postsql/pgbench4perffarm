@@ -158,13 +158,17 @@ if [[ -n "$BATCH_DIR" && -d "$BATCH_DIR" ]]; then
         REMOTE_SCHEMA="${REMOTE_METRICS_DB_SCHEMA:-${METRICS_DB_SCHEMA:-public}}"
         LOCAL_SCHEMA="${METRICS_DB_SCHEMA:-public}"
         log_info "Syncing batch_id=$BATCH_ID (level=$UPLOAD_LEVEL) from $METRICS_DB_CONNINFO ($LOCAL_SCHEMA) to remote metrics DB ($REMOTE_METRICS_DB_CONNINFO, schema=$REMOTE_SCHEMA)..."
-        if [[ "$REMOTE_SCHEMA" != "public" ]]; then
-            "$PSQL_BIN" -X -q -d "$REMOTE_METRICS_DB_CONNINFO" \
-                -c "CREATE SCHEMA IF NOT EXISTS \"${REMOTE_SCHEMA}\";" >/dev/null || true
+        HAS_REMOTE_SCHEMA="$("$PSQL_BIN" -X -q -t -A -d "$REMOTE_METRICS_DB_CONNINFO" \
+            -c "SELECT to_regclass('\"${REMOTE_SCHEMA}\".perffarm_batches') IS NOT NULL;" 2>/dev/null || echo "f")"
+        if [[ "$HAS_REMOTE_SCHEMA" != "t" ]]; then
+            if [[ "$REMOTE_SCHEMA" != "public" ]]; then
+                "$PSQL_BIN" -X -q -d "$REMOTE_METRICS_DB_CONNINFO" \
+                    -c "CREATE SCHEMA IF NOT EXISTS \"${REMOTE_SCHEMA}\";" >/dev/null || true
+            fi
+            "$PSQL_BIN" -X -q -v ON_ERROR_STOP=1 -d "$REMOTE_METRICS_DB_CONNINFO" \
+                -c "SET client_min_messages TO WARNING; SET search_path TO \"${REMOTE_SCHEMA}\", public, pg_catalog;" \
+                -f "$SCRIPT_DIR/sql/metrics_db_schema.sql" >/dev/null
         fi
-        "$PSQL_BIN" -X -q -v ON_ERROR_STOP=1 -d "$REMOTE_METRICS_DB_CONNINFO" \
-            -c "SET search_path TO \"${REMOTE_SCHEMA}\", public, pg_catalog;" \
-            -f "$SCRIPT_DIR/sql/metrics_db_schema.sql" >/dev/null
 
         python3 - "$PSQL_BIN" "$METRICS_DB_CONNINFO" "$LOCAL_SCHEMA" \
             "$REMOTE_METRICS_DB_CONNINFO" "$REMOTE_SCHEMA" "$BATCH_ID" "$ANIMAL_NAME" "$UPLOAD_LEVEL" <<'PY'

@@ -466,13 +466,38 @@ else
     fi
 
     if [[ -n "$COMMIT_OVERRIDE" ]]; then
+        if [[ "$FORCE_RUN" != "true" ]]; then
+            EARLY_PSQL="psql"
+            for cand_pgc in "${METRICS_PG_CONFIG:-}" "$WORKDIR/metrics_pg_install/bin/pg_config" "${PREBUILT_PG_CONFIG:-}" "${PG_CONFIG:-}" "pg_config" "$HOME/pg20_install/bin/pg_config" "$HOME/pg18/bin/pg_config" /usr/lib/postgresql/*/bin/pg_config; do
+                if [[ -n "$cand_pgc" ]] && command -v "$cand_pgc" >/dev/null 2>&1; then
+                    cand_bindir="$("$cand_pgc" --bindir 2>/dev/null || true)"
+                    if [[ -n "$cand_bindir" && -x "$cand_bindir/psql" ]]; then
+                        EARLY_PSQL="$cand_bindir/psql"
+                        break
+                    fi
+                fi
+            done
+            ALREADY_TESTED="$("$EARLY_PSQL" -X -q -t -A -d "$METRICS_DB_CONNINFO" -c "
+                SELECT count(*)
+                FROM \"${METRICS_DB_SCHEMA}\".perffarm_batches
+                WHERE animal_name = '${ANIMAL_NAME}'
+                  AND pg_branch = '${FIRST_BRANCH}'
+                  AND git_commit_sha LIKE '${COMMIT_OVERRIDE}%'
+                  AND test_profile = '${TEST_PROFILE}'
+                  AND status = 'completed';
+            " 2>/dev/null || echo "0")"
+            if [[ "${ALREADY_TESTED:-0}" -gt 0 ]]; then
+                log_info "Commit ${COMMIT_OVERRIDE:0:12} on branch '$FIRST_BRANCH' (profile=$TEST_PROFILE) was already tested on animal '$ANIMAL_NAME'. Skipping without re-running."
+                exit 0
+            fi
+        fi
         log_info "Checking out requested commit '$COMMIT_OVERRIDE' on branch '$FIRST_BRANCH'..."
         if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
             git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || \
                 git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
                 git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || true
             if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
-                git -C "$PG_SRC_DIR" fetch --shallow-since="60 days ago" origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || true
+                git -C "$PG_SRC_DIR" fetch --shallow-since="365 days ago" origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || true
             fi
         fi
         if ! git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1; then

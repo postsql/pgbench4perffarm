@@ -1,0 +1,91 @@
+# PostgreSQL master daily clean-CI commits (24h intervals over the last 90 days, chronological order)
+e01accdb50ce8f879182edb1b50f3bc9bd78bfa7  # [01] 2026-07-26T16:49:56Z | Add _bt_set_startikey row compare test coverage.
+74276e685dd01a8834f05f7d8b29a140a264e127  # [02] 2026-07-27T23:33:23Z | Fix propagation of indimmediate flag in index_create_copy()
+dd50eb9145eead17ebd62db2e43a6de7c53102c0  # [03] 2026-07-28T23:54:11Z | Use more strlcpy() in two-phase transaction code
+b43e8f4b3dc5b361e78f237b136c9c1f817e13c4  # [04] 2026-07-29T20:02:57Z | pgindent fix for a84eca6627f
+18f9785e0b3aa75b5c61fb3dd35d9f4fd6723d49  # [05] 2026-07-30T23:17:10Z | Fix background psql session cleanup in 051_effective_wal_level.pl.
+c9a669492719db2fe45cd17259ae0fc3bc4d91c5  # [06] 2026-07-31T21:46:36Z | Allow IO time to be counted without a matching IO operation in pg_stat_io
+7a0299a1348b563c72a57a2a40462e90af9dfbac  # [07] 2026-08-01T19:35:51Z | Add a comment to distinguish backend types
+4e68b7e291d39bc778f867e08f2741e63417fc2e  # [08] 2026-08-02T20:49:17Z | Tighten up TS dictionary cache entry creation.
+824d5f6241ea7a0a85c9d2b3d27beb78e42a36ab  # [09] 2026-08-03T21:02:07Z | Handle concurrently-dropped relations in database-wide VACUUM.
+a37e5745453f76e4bec208920773ef9c90fd50d1  # [10] 2026-08-04T22:04:28Z | Silence Coverity warning about unused visibilitymap_clear() result
+1200dfd60c367e97a5e1f31100d82072eb0178b6  # [11] 2026-08-05T23:19:13Z | Remove redundant unlink() in KeepFileRestoredFromArchive() for non-WIN32
+5593aca0c62e08f5827d706d03be99481ef9bcb0  # [12] 2026-08-06T18:10:00Z | Remove lo_hton64() and lo_ntoh64().
+b59783502224c0ae721974a5d9b6fb915cbd37e1  # [13] 2026-08-07T15:09:05Z | Fix hot standby accepting connections too early after a crash reset
+127ce776983f19e81ba8abda1984f6f0e229c1b5  # [14] 2026-08-09T23:37:32Z | Use OOM-safe routine for pgstats shared hashtable insert
+086f6f1760140a0055c2faa8d6831fd3ebaf96b0  # [15] 2026-08-10T13:37:50Z | psql: Don't do backquote expansion in \unrestrict.
+931c9701f2509160a2bed7d50129669e2cb32bf9  # [16] 2026-08-11T23:14:59Z | Change wal_compression=on to the first of zstd, lz4, pglz
+aaf67e4825f32d764296fabfa3a86c4da90cec16  # [17] 2026-08-12T14:48:21Z | Avoid recalculating pgprocno in ProcArrayAdd()
+28995f051e72a1efae0e85d0ea43f80c38166657  # [18] 2026-08-13T22:37:01Z | Use explicit fetching of digests in channel binding (OpenSSL >= 3.0)
+1b87dd4303a9a90f2f4004fb08a00af7d3d25207  # [19] 2026-08-14T19:52:21Z | Use correct data type for version identifier
+3d00537feb565c410baf41bb301eee338e4b2317  # [20] 2026-08-15T16:42:23Z | Clarify logic in CreateSubscription().
+803583ce74d37c27167bd4d1c9e9dd2421735943  # [21] 2026-08-16T23:53:22Z | Fix ASAN failure after flex errors in GUC file parsing
+4921447bea7d6874384bd8d651d66074de39a8aa  # [22] 2026-08-17T22:17:51Z | Doc: clean up documentation about text search datatype limits.
+5bf8fee543a19ca9ffa5aa99046adae34ba6a864  # [23] 2026-08-18T21:47:13Z | Make plperl's handling of Perl hashes more consistent.
+cb217c4f174f487009bcba3812bbf23b8d8eba4c  # [24] 2026-08-19T19:45:56Z | GiST: Invalidate killed items consistently.
+0ebeec35fc3c3bf617ac447b36f1b158b076f6e7  # [25] 2026-08-20T23:47:32Z | Fix snapshot import xmin ProcArrayLock bug.
+7788fcf39bf98c3403f052f3edd73d86fe1501a7  # [26] 2026-08-21T23:38:30Z | Fix failing Memoize test on 32-bit machines
+f20c4278342f6afc44b856e98a0850f9dd2df0a8  # [27] 2026-08-22T18:50:40Z | Fix GIN posting tree page deletion with incomplete splits.
+8aa49d34e977affb21f3cdbf17661c9c64753f42  # [28] 2026-08-23T16:42:55Z | Allow an aggregate's planner support function to be set via CREATE AGGREGATE.
+d5d86704f4fddae04911e7784824429cbb2f6a84  # [29] 2026-08-24T22:42:41Z | Align random test function parameters in test_bitmapset
+3c982c9bf1af994090a181c68f9407ff39d3ddf7  # [30] 2026-08-25T13:45:19Z | Add test for view referencing labels shared by vertex and edge tables
+7612ae8ed8c941985d9cbf60a0674c48f5b0abe5  # [31] 2026-08-26T21:56:41Z | Revert support for ALTER TABLE ... MERGE/SPLIT PARTITION(S) commands
+45817676632b46fc9d2b97c8d432348e0ee4f1f4  # [32] 2026-08-27T19:25:01Z | Report next_multi_offset as bigint in pg_control_checkpoint().
+6c5f1d6074208146930b67c2054509c3e82f6f7f  # [33] 2026-08-28T21:24:47Z | Propagate rebalanced cost limit to parallel vacuum workers
+ec13f71049cda06ea55a67783b822d98824f4d15  # [34] 2026-08-29T15:23:23Z | Disallow ONLY in REPACK commands.
+92819e57945d106317eaaa4273180dd8663f91bd  # [35] 2026-08-30T14:13:09Z | doc: Mark up "option" in the CHECKPOINT synopsis.
+fa68aeeab115abf46abf8277f6dd6a89f5f93440  # [36] 2026-08-31T23:12:34Z | Fix comment in attribute_stats.c
+a0edc1c318f3393474d50249ad2355e00fc4cd28  # [37] 2026-09-01T21:27:18Z | pg_dump: Fix performance regression in attribute statistics query.
+792094a5ce89f9953d913c835e4530e56b63026a  # [38] 2026-09-02T19:02:42Z | Coerce GRAPH_TABLE pattern WHERE clauses to boolean
+2b3d11aaed891958f24aed05bf454524d603b6ea  # [39] 2026-09-03T22:50:46Z | Minimize footprint of TOAST_MAX_CHUNK_SIZE in heap and amcheck code
+74c77052bc20017076100f0649ca0f44b1b98c29  # [40] 2026-09-04T18:02:22Z | Convert FastPathStrongRelationLocks to atomics.
+798bdcae89debabc59fa8afc6d690fec584db32f  # [41] 2026-09-05T00:12:40Z | Fix incorrect error message in xlogreader.c
+c5806f2165b57434290dd345ba301e4179634c23  # [42] 2026-09-06T23:45:23Z | Rename varatt_external to varatt_external_oid
+23c07b4604387b98efd25246b185b57be237d7ca  # [43] 2026-09-07T20:05:18Z | Improve display of GUCs that are customarily written in octal.
+86f7c82cf1023e3599f40f939727791a7090cd44  # [44] 2026-09-08T20:04:56Z | Restrict REPACK (CONCURRENTLY) on user catalog tables.
+1129570f654e96d45bbc63397079171af29710b9  # [45] 2026-09-09T21:49:33Z | pg_plan_advice: Add CHECK_FOR_INTERRUPTS() and check_stack_depth()
+504fe10d1d260159369e10ff151ff28aaa091c44  # [46] 2026-09-10T20:33:21Z | Fix misplaced comment in snapbuild.c.
+237176b7951539fcc54f6a81ce1f29853099c3f7  # [47] 2026-09-11T20:18:40Z | Fix option argument lookup in in-tree getopt_long().
+8c7a74c3239ce29940582643533a190721b395c0  # [48] 2026-09-12T20:30:03Z | Re-read standby LSN after recovery ends
+0c5d6269614e107d1d2d669f82f63f7e232b30c9  # [49] 2026-09-13T12:06:00Z | Fail REPACK in presence of !indisready indexes
+a625fc570c22e199471e1a2656e2c32b8dc0c0fd  # [50] 2026-09-14T23:37:06Z | Add support for toast_value_type=oid8
+72af14bccd2127bf20ddeaf198b78de46e9e892b  # [51] 2026-09-15T22:07:08Z | Use hex_decode_safe() to speed up UUID input.
+5e595d659fdb4829e910a1c4122ad4dec9dd0bd3  # [52] 2026-09-16T18:44:42Z | pg_plan_advice: Disallow empty sublists within JOIN_ORDER()
+e1d8f81d4961ca6c4228eb9a3ab5d36168008e42  # [53] 2026-09-17T15:15:52Z | pg_plan_advice: Fix defects in JOIN_ORDER advice feedback.
+484b3e1d83eefffa3953ff6bfea72dbe547916b5  # [54] 2026-09-18T19:14:09Z | Remove unused columns from pg_upgrade's query
+a8bb1a77795bab6e1304efa5c5dabee797b6887e  # [55] 2026-09-19T13:46:04Z | Fix join removal when Vars reference the removed join via its alias
+9e17d25e79d4756be08b4a5521b4b58450217137  # [56] 2026-09-20T05:13:17Z | Attempt to fix test interference from foreign_key opfamily test
+d39fda1cc404834781458376173e5293f870e83a  # [57] 2026-09-21T10:36:50Z | Simplify abbreviated key hashing during cardinality estimation
+07c73f45063f6fcdc7f460aec84396ae4e0f71c5  # [58] 2026-09-22T22:19:00Z | Avoid replay cleanup locks for freeze-only and VM-only records
+d9de60c5e47a7f7a5dcee050d119bda08ea85d55  # [59] 2026-09-23T23:48:56Z | Allocate pgstats entry body before insert into shared hashtable
+2c10c2ce4d7bcd57543a49ab402af02a39724e0a  # [60] 2026-09-24T21:57:05Z | Silence another "may be used uninitialized" compiler warning.
+f197fdee8265050bfefb2f5d00829a814ff05ae4  # [61] 2026-09-25T22:36:17Z | Doc: clarify there's no log_line_prefix in csvlog or jsonlog output.
+3c5d9d914fa5b8fb3f371dd97bdece032ca3598d  # [62] 2026-09-26T16:55:40Z | Don't emit garbage "\[un]restrict (null)" commands in pg_dump.
+5e59290402518db5b2876ecd627c7d79f73eaa44  # [63] 2026-09-27T21:55:02Z | Enforce pg_class.relchecks limit (32,767 or INT16_MAX)
+cc053b6e127763e4168f18585ca90a67600c270e  # [64] 2026-09-28T23:28:30Z | Fix crash in parallel autovacuum when no DSM segment can be created.
+dca6a9e320e0272f0ea8d7e076cda04b06050866  # [65] 2026-09-29T15:11:15Z | Prevent self-join elimination when RTEs' checkAsUser fields differ.
+a36e2f7cd21c36f6e8960e3b622526eaa7055bb9  # [66] 2026-09-30T21:28:14Z | Update time zone data files to tzdata release 2026e.
+1378aa13430e264a990a18597e9d8fdae740927e  # [67] 2026-10-01T22:29:22Z | Report per-index vacuum progress in pg_stat_progress_vacuum
+6f3bdadaadc4692050ca20dff53d3890088b9272  # [68] 2026-10-02T11:15:32Z | Write pg_attribute_counted_by() in front of the type
+9dcaea6edc8c3f8a658ff788c94b6a896ae254af  # [69] 2026-10-03T21:14:33Z | Map pg_attribute_counted_by() to _Field_size_() under MSVC
+3ff475ac12ec8d8d07cf3fd86144659285a59d83  # [70] 2026-10-04T14:46:08Z | Silence -fsanitize=function where we cast function pointers on purpose
+8b29b8da78ea77c74ce2e6b140dcdde45ccb0268  # [71] 2026-10-05T23:50:18Z | Fix sorting on extra grouping keys of child relations
+12f866cd5f72d65ed4435b8203540efde45ba01d  # [72] 2026-10-06T23:45:37Z | Fix handling of shutdown requests during an early crash restart
+1f2245371e31f0def347546f5ad250552a4eb8a4  # [73] 2026-10-07T18:56:04Z | Fix slotsync when logical decoding is disabled and re-enabled.
+1b5dd3a24a48659e8413ef8ddd8adb6653507a9d  # [74] 2026-10-08T22:03:07Z | Fix incorrect reinit of run-time pruning for EPQ rechecks
+15a947f30726cadff695b7601329d90b6703e268  # [75] 2026-10-09T22:01:02Z | refactor: Move BackendWritebackContext initialization
+9e7d152488f197e96f171f0714459c227c3f7693  # [76] 2026-10-10T23:38:58Z | Add nbtree README note on index-only scans in recovery.
+8e82d6610e7280d7870c0c36ff1c797e3cfb3e09  # [77] 2026-10-12T09:56:10Z | doc: Consistently use double quotes for attrs in ulinks
+6b3f8857aa83b214f9e7d2465d4e21d6ef75f39e  # [78] 2026-10-13T21:53:20Z | Delay qp_callback processing till after join removal.
+3c6665bf0266a7ae78117c3ed0299bfbd1f1331a  # [79] 2026-10-14T23:30:03Z | Disallow serialized callbacks for fixed-sized custom stats kinds
+856a6594d86e4a7c0e9490253912af3f6159802f  # [80] 2026-10-15T23:09:04Z | Report pages read from WAL buffers in pg_stat_io.hits
+26bd08fb5c069fbdf55867adc398cfca0f55d5c8  # [81] 2026-10-16T21:22:33Z | doc: Note that plan advice does not affect cached plans
+45fc51fcbf4534ea2f6f85e36f8155dbd5ba9851  # [82] 2026-10-17T15:02:49Z | Fix nbtree unsatisfiable row compare assertion failure.
+9d882c10bfb6f56a0a430872ef3040875535b06b  # [83] 2026-10-18T22:35:00Z | libpq: Revert the connection option "servicefile"
+0497318e4422cbb9bff8c075a53a50b12065147c  # [84] 2026-10-19T21:51:30Z | Fix two issues in deparsing.
+68af68ac691f2b57d29524a191debed9b0bdd558  # [85] 2026-10-20T22:49:30Z | Fix cross-version upgrade tests for commits 0497318e4 et al.
+fded90eec3ebab14a327a3c40263e2366eb3c42a  # [86] 2026-10-21T18:10:35Z | Reject currtid2() on unlogged tables during recovery.
+f52d405113c83f691fffac261bfec297209c21b4  # [87] 2026-10-22T23:02:18Z | Temporarily remove a test case that hits an unfixed bug
+126976a8ffcfa47f40d3df09243ebf4606001912  # [88] 2026-10-23T15:35:42Z | Emit null-keyed hash join outer tuples immediately when feasible.
+0019a1ecf4c7615a2570d21eeb4b32ae3b371f18  # [89] 2026-10-24T20:53:43Z | doc: Fix removal of FreeBSD mention in DocBook section
+dfd7ede529f288639760444a9c69f3f7bb65450c  # [90] 2026-10-25T19:14:13Z | Fix leaked hash scans in pg_listening_channels().

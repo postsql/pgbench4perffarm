@@ -1,0 +1,24 @@
+{
+  "suite": "pgbench-graph-pgq-algorithms-spanner",
+  "description": "Graph Algorithms Suite (BFS, WCC, SSSP, PageRank, LCC) using Spanner Graph (GoogleSQL GRAPH_TABLE)",
+  "scale": 1000,
+  "no_vacuum": true,
+  "clients": 2,
+  "threads": 2,
+  "transactions": 1,
+  "init_steps": [
+    {
+      "name": "schema",
+      "file": "pgbench_graph_pgq_spanner_schema.sql"
+    }
+  ],
+  "scripts": [
+    {
+      "file": "pgbench_graph_pgq_spanner_algorithms.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

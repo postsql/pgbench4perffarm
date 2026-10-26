@@ -1,0 +1,24 @@
+{
+  "suite": "pgbench-graph-pgq-financial-spanner",
+  "description": "Financial Transaction Graph Workload Suite using Spanner Graph (GoogleSQL GRAPH_TABLE)",
+  "scale": 1000,
+  "no_vacuum": true,
+  "clients": 4,
+  "threads": 2,
+  "transactions": 10,
+  "init_steps": [
+    {
+      "name": "schema",
+      "file": "pgbench_graph_pgq_spanner_schema.sql"
+    }
+  ],
+  "scripts": [
+    {
+      "file": "pgbench_graph_pgq_spanner_financial.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

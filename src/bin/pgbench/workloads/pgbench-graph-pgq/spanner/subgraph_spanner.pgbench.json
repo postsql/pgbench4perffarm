@@ -1,0 +1,24 @@
+{
+  "suite": "pgbench-graph-pgq-subgraph-spanner",
+  "description": "Labelled Subgraph Pattern-Matching Suite (Q1-Q9) using Spanner Graph (GoogleSQL GRAPH_TABLE)",
+  "scale": 1000,
+  "no_vacuum": true,
+  "clients": 4,
+  "threads": 4,
+  "transactions": 5,
+  "init_steps": [
+    {
+      "name": "schema",
+      "file": "pgbench_graph_pgq_spanner_schema.sql"
+    }
+  ],
+  "scripts": [
+    {
+      "file": "pgbench_graph_pgq_spanner_subgraph.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "suite": "pgbench-graph-pgq-social-bi-spanner",
+  "description": "Social Graph Business Intelligence phased workload using Spanner Graph (GoogleSQL GRAPH_TABLE)",
+  "scale": 1000,
+  "no_vacuum": true,
+  "clients": 4,
+  "threads": 4,
+  "transactions": 1,
+  "init_steps": [
+    {
+      "name": "schema",
+      "file": "pgbench_graph_pgq_spanner_schema.sql"
+    }
+  ],
+  "scripts": [
+    {
+      "file": "pgbench_graph_pgq_spanner_social_bi.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

@@ -1,0 +1,53 @@
+{
+  "suite": "pgbench-graph-pgq-social-interactive-spanner",
+  "description": "Social Graph Interactive multi-group readers and writers using Spanner Graph (GoogleSQL GRAPH_TABLE)",
+  "scale": 1000,
+  "no_vacuum": true,
+  "duration_sec": 30,
+  "replay_speed": 0.1,
+  "reservoirs": {
+    "persons": 65536,
+    "messages": 65536
+  },
+  "init_steps": [
+    {
+      "name": "schema",
+      "file": "pgbench_graph_pgq_spanner_schema.sql"
+    }
+  ],
+  "groups": [
+    {
+      "name": "social_readers",
+      "clients": 4,
+      "threads": 2,
+      "scripts": [
+        {
+          "file": "pgbench_graph_pgq_spanner_social_complex.sql",
+          "weight": 30
+        },
+        {
+          "file": "pgbench_graph_pgq_spanner_social_short.sql",
+          "weight": 70
+        }
+      ]
+    },
+    {
+      "name": "social_writers",
+      "clients": 2,
+      "threads": 2,
+      "scripts": [
+        {
+          "file": "pgbench_graph_pgq_spanner_social_insert.sql",
+          "weight": 75
+        },
+        {
+          "file": "pgbench_graph_pgq_spanner_social_delete.sql",
+          "weight": 25
+        }
+      ]
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

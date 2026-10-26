@@ -1051,7 +1051,7 @@ WITH ordered_runs AS (
     FROM perffarm_commit_summary_v s
     WHERE s.verification_status IN ('PASSED', 'FAILED')
     WINDOW w AS (
-        PARTITION BY s.animal_name, s.pg_branch, s.test_profile, s.test_name
+        PARTITION BY s.animal_name, s.pg_branch, s.test_profile, s.test_name, round(s.duration_sec, -1)
         ORDER BY COALESCE(s.git_commit_ts, s.started_at) ASC, s.batch_id ASC, s.test_run_id ASC
     )
 )

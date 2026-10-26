@@ -228,6 +228,22 @@ test_runs = query_json(
 )
 run_ids = [int(r["pgbench_run_id"]) for r in test_runs if r.get("pgbench_run_id") is not None]
 run_ids_csv = ",".join(str(rid) for rid in run_ids)
+pgb_runs = (
+    query_json(
+        local_conn,
+        f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY run_id), \'[]\'::json) FROM "{local_schema}".pgbench_runs t WHERE run_id IN ({run_ids_csv});',
+    )
+    if run_ids_csv
+    else []
+)
+
+# Ensure remote sequences are at least at max(id) before allocating any new IDs
+exec_remote(f"""
+SET search_path TO "{remote_schema}", public, pg_catalog;
+SELECT setval(pg_get_serial_sequence('perffarm_batches', 'batch_id'), GREATEST(COALESCE((SELECT max(batch_id) FROM perffarm_batches), 1), 1), true);
+SELECT setval(pg_get_serial_sequence('perffarm_test_runs', 'test_run_id'), GREATEST(COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 1), 1), true);
+SELECT setval(pg_get_serial_sequence('pgbench_runs', 'run_id'), GREATEST(COALESCE((SELECT max(run_id) FROM pgbench_runs), 1), 1), true);
+""")
 
 # Resolve remote IDs without colliding with other animals' batches/runs on remote_conn
 existing_remote_batches = []
@@ -280,7 +296,7 @@ if existing_remote_batches:
         if x is not None
     )
 
-run_labels = [r["run_label"] for r in test_runs if r.get("run_label")]
+run_labels = [r["run_label"] for r in pgb_runs if r.get("run_label")]
 if run_labels:
     lbl_csv = ",".join(slit(lbl) for lbl in run_labels)
     for x in query_json(
@@ -294,73 +310,52 @@ if run_labels:
         if x is not None and int(x) not in existing_remote_rids:
             existing_remote_rids.append(int(x))
 
-occupied_batch_ids = set(
-    int(x)
-    for x in query_json(
-        remote_conn,
-        f'SELECT COALESCE(json_agg(batch_id), \'[]\'::json) FROM "{remote_schema}".perffarm_batches;',
-    )
-    if x is not None
-) - set(existing_remote_batches)
-
-occupied_run_ids = set(
-    int(x)
-    for x in query_json(
-        remote_conn,
-        f'SELECT COALESCE(json_agg(run_id), \'[]\'::json) FROM "{remote_schema}".pgbench_runs;',
-    )
-    if x is not None
-) - set(existing_remote_rids)
-
-occupied_tr_ids = set(
-    int(x)
-    for x in query_json(
-        remote_conn,
-        f'SELECT COALESCE(json_agg(test_run_id), \'[]\'::json) FROM "{remote_schema}".perffarm_test_runs;',
-    )
-    if x is not None
-) - set(existing_remote_trids)
-
 if existing_remote_batches:
     remote_batch_id = existing_remote_batches[0]
-elif batch_id not in occupied_batch_ids:
-    remote_batch_id = batch_id
 else:
-    remote_batch_id = max(occupied_batch_ids) + 1
-occupied_batch_ids.add(remote_batch_id)
+    remote_batch_id = int(
+        query_json(
+            remote_conn,
+            f"SELECT json_build_array(nextval(pg_get_serial_sequence('\"{remote_schema}\".perffarm_batches', 'batch_id')));",
+        )[0]
+    )
 
 rid_map = {}
 if len(existing_remote_rids) == len(run_ids):
     for local_rid, rem_rid in zip(run_ids, existing_remote_rids):
         rid_map[local_rid] = rem_rid
-        occupied_run_ids.add(rem_rid)
-else:
-    for local_rid in run_ids:
-        if local_rid not in occupied_run_ids:
-            rid_map[local_rid] = local_rid
-            occupied_run_ids.add(local_rid)
-        else:
-            new_rid = (max(occupied_run_ids) if occupied_run_ids else 0) + 1
-            rid_map[local_rid] = new_rid
-            occupied_run_ids.add(new_rid)
+elif run_ids:
+    alloc_rids = [
+        int(x)
+        for x in query_json(
+            remote_conn,
+            f"SELECT json_agg(nextval(pg_get_serial_sequence('\"{remote_schema}\".pgbench_runs', 'run_id'))) FROM generate_series(1, {len(run_ids)});",
+        )
+    ]
+    for local_rid, rem_rid in zip(run_ids, alloc_rids):
+        rid_map[local_rid] = rem_rid
 
 tr_map = {}
 local_trids = [int(tr["test_run_id"]) for tr in test_runs]
 if len(existing_remote_trids) == len(local_trids):
     for l_trid, r_trid in zip(local_trids, existing_remote_trids):
         tr_map[l_trid] = r_trid
-        occupied_tr_ids.add(r_trid)
-else:
-    for l_trid in local_trids:
-        if l_trid not in occupied_tr_ids:
-            tr_map[l_trid] = l_trid
-            occupied_tr_ids.add(l_trid)
-        else:
-            new_trid = (max(occupied_tr_ids) if occupied_tr_ids else 0) + 1
-            tr_map[l_trid] = new_trid
-            occupied_tr_ids.add(new_trid)
+elif local_trids:
+    alloc_trids = [
+        int(x)
+        for x in query_json(
+            remote_conn,
+            f"SELECT json_agg(nextval(pg_get_serial_sequence('\"{remote_schema}\".perffarm_test_runs', 'test_run_id'))) FROM generate_series(1, {len(local_trids)});",
+        )
+    ]
+    for l_trid, r_trid in zip(local_trids, alloc_trids):
+        tr_map[l_trid] = r_trid
 
-sql_parts = [f'SET search_path TO "{remote_schema}", public, pg_catalog;', "BEGIN;"]
+sql_parts = [
+    f'SET search_path TO "{remote_schema}", public, pg_catalog;',
+    "BEGIN;",
+    "SELECT pg_advisory_xact_lock(73733476);",
+]
 
 if animals:
     sql_parts.append(f"""
@@ -398,10 +393,6 @@ SELECT * FROM jsonb_populate_recordset(NULL::perffarm_batches, {jlit(batches)});
 """)
 
 if run_ids_csv:
-    pgb_runs = query_json(
-        local_conn,
-        f'SELECT COALESCE(json_agg(row_to_json(t) ORDER BY run_id), \'[]\'::json) FROM "{local_schema}".pgbench_runs t WHERE run_id IN ({run_ids_csv});',
-    )
     if del_run_csv:
         sql_parts.append(f"""
 DELETE FROM pgbench_progress_log WHERE run_id IN ({del_run_csv});

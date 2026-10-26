@@ -38,6 +38,12 @@ COMMITS_FILE_OVERRIDE=""
 CI_STATUS_OVERRIDE=""
 PROFILE_OVERRIDE=""
 TESTS_OVERRIDE=""
+DURATION_SEQUENCE_OVERRIDE=""
+REPEATS_OVERRIDE=""
+SCALE_OVERRIDE=""
+CLIENTS_OVERRIDE=""
+THREADS_OVERRIDE=""
+DURATION_OVERRIDE=""
 METRICS_LEVEL_OVERRIDE=""
 UPLOAD_LEVEL_OVERRIDE=""
 TOPOLOGY_OVERRIDE=""
@@ -103,9 +109,65 @@ while [[ $# -gt 0 ]]; do
             PROFILE_OVERRIDE="${1#*=}"
             shift
             ;;
+        --profile)
+            PROFILE_OVERRIDE="$2"
+            shift 2
+            ;;
         --tests=*)
             TESTS_OVERRIDE="${1#*=}"
             shift
+            ;;
+        --tests)
+            TESTS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --durations=*|--duration-sequence=*)
+            DURATION_SEQUENCE_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --durations|--duration-sequence)
+            DURATION_SEQUENCE_OVERRIDE="$2"
+            shift 2
+            ;;
+        --repeats=*)
+            REPEATS_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --repeats)
+            REPEATS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --scale=*)
+            SCALE_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --scale)
+            SCALE_OVERRIDE="$2"
+            shift 2
+            ;;
+        --clients=*)
+            CLIENTS_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --clients)
+            CLIENTS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --threads=*)
+            THREADS_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --threads)
+            THREADS_OVERRIDE="$2"
+            shift 2
+            ;;
+        --duration=*)
+            DURATION_OVERRIDE="${1#*=}"
+            shift
+            ;;
+        --duration)
+            DURATION_OVERRIDE="$2"
+            shift 2
             ;;
         --metrics-level=*)
             METRICS_LEVEL_OVERRIDE="${1#*=}"
@@ -184,6 +246,13 @@ Options:
   --ci-status=STATUS          Explicit CI status (e.g., github_success) when pre-verified
   --profile=TIER              Sizing profile: smoke | standard | nightly (default: from animal.conf)
   --tests=LIST                Comma-separated test or suite names, or 'all'
+  --durations=LIST            Sequence of durations in seconds to run sequentially against each prepared DB
+                              without re-initializing (e.g., '60,60,60,300' or '60x3,300')
+  --repeats=N                 Number of consecutive runs per prepared DB when --durations is not set
+  --scale=N                   Override benchmark scale factor
+  --clients=N                 Override benchmark client count
+  --threads=N                 Override benchmark worker thread count
+  --duration=SEC              Override single-run benchmark duration in seconds
   --metrics-level=LEVEL       Telemetry granularity: summary | timeseries | full-trace
   --upload-level=LEVEL        Upload granularity: summary | timeseries | full-trace
   --topology=MODE             local | remote-server | remote-client | both-remote
@@ -222,6 +291,8 @@ fi
 [[ -n "$BRANCH_OVERRIDE" ]]             && PG_BRANCHES="$BRANCH_OVERRIDE"
 [[ -n "$PROFILE_OVERRIDE" ]]            && TEST_PROFILE="$PROFILE_OVERRIDE"
 [[ -n "$TESTS_OVERRIDE" ]]              && TEST_SUITE_FILTER="$TESTS_OVERRIDE"
+[[ -n "$DURATION_SEQUENCE_OVERRIDE" ]]  && TEST_DURATION_SEQUENCE="$DURATION_SEQUENCE_OVERRIDE"
+[[ -n "$REPEATS_OVERRIDE" ]]            && TEST_REPEATS="$REPEATS_OVERRIDE"
 [[ -n "$METRICS_LEVEL_OVERRIDE" ]]      && METRICS_LEVEL="$METRICS_LEVEL_OVERRIDE"
 [[ -n "$UPLOAD_LEVEL_OVERRIDE" ]]       && UPLOAD_LEVEL="$UPLOAD_LEVEL_OVERRIDE"
 [[ -n "$TOPOLOGY_OVERRIDE" ]]           && TOPOLOGY="$TOPOLOGY_OVERRIDE"
@@ -837,35 +908,96 @@ fi
 CW_DURATION_SEC=$(( $(date +%s) - CW_START_TS ))
 
 # Select tests to execute from test_matrix.json
-SELECTED_TESTS_JSON="$(python3 - "$TEST_MATRIX_FILE" "$TEST_PROFILE" "$TEST_SUITE_FILTER" <<'PY'
+SELECTED_TESTS_JSON="$(python3 - "$TEST_MATRIX_FILE" "$TEST_PROFILE" "$TEST_SUITE_FILTER" \
+    "${TEST_DURATION_SEQUENCE:-}" "${TEST_REPEATS:-}" \
+    "${SCALE_OVERRIDE:-}" "${CLIENTS_OVERRIDE:-}" "${THREADS_OVERRIDE:-}" "${DURATION_OVERRIDE:-}" <<'PY'
 import json
+import re
 import sys
 
-matrix_file, profile, suite_filter = sys.argv[1:4]
+(
+    matrix_file,
+    profile,
+    suite_filter,
+    dur_seq_raw,
+    repeats_raw,
+    scale_ovr,
+    clients_ovr,
+    threads_ovr,
+    dur_ovr,
+) = sys.argv[1:10]
+
 matrix = json.loads(open(matrix_file, encoding="utf-8").read())
-filters = [x.strip() for x in suite_filter.split(",") if x.strip()]
+
+def norm_name(s: str) -> str:
+    return (s or "").strip().lower().replace("_", "-")
+
+filters = [norm_name(x) for x in suite_filter.split(",") if x.strip()]
 allow_all = ("all" in filters) or (not filters)
+
+def parse_duration_sequence(raw: str) -> list[int]:
+    seq: list[int] = []
+    if not raw or not raw.strip():
+        return seq
+    for tok in re.split(r"[,;\s]+", raw.strip()):
+        if not tok:
+            continue
+        m_rep = re.match(r"^(\d+)s?[x\*](\d+)$", tok, flags=re.IGNORECASE)
+        if m_rep:
+            dur = int(m_rep.group(1))
+            cnt = max(1, int(m_rep.group(2)))
+            seq.extend([dur] * cnt)
+            continue
+        m_single = re.match(r"^(\d+)s?$", tok, flags=re.IGNORECASE)
+        if m_single:
+            seq.append(int(m_single.group(1)))
+            continue
+        raise ValueError(f"Invalid duration sequence token: {tok!r}")
+    return seq
+
+explicit_seq = parse_duration_sequence(dur_seq_raw)
 
 selected = []
 for t in matrix.get("tests", []):
     if not t.get("enabled", True):
         continue
     if not allow_all:
-        if (
-            t["name"] not in filters
-            and t.get("suite") not in filters
-            and t.get("category") not in filters
-        ):
+        candidates = {
+            norm_name(t.get("name", "")),
+            norm_name(t.get("suite", "")),
+            norm_name(t.get("category", "")),
+        }
+        if not (candidates & set(filters)):
             continue
-    prof_cfg = t.get("profiles", {}).get(profile) or t.get("profiles", {}).get("standard", {})
+    prof_cfg = dict(t.get("profiles", {}).get(profile) or t.get("profiles", {}).get("standard", {}))
+    if scale_ovr:
+        prof_cfg["scale"] = int(scale_ovr)
+    if clients_ovr:
+        prof_cfg["clients"] = int(clients_ovr)
+    if threads_ovr:
+        prof_cfg["threads"] = int(threads_ovr)
+    if dur_ovr:
+        prof_cfg["duration_sec"] = int(dur_ovr)
+
+    if explicit_seq:
+        run_seq = list(explicit_seq)
+    elif prof_cfg.get("duration_sequence_sec"):
+        run_seq = [int(x) for x in prof_cfg["duration_sequence_sec"]]
+    else:
+        rep = int(repeats_raw) if repeats_raw else int(prof_cfg.get("repeats", 1) or 1)
+        base_dur = int(prof_cfg.get("duration_sec", 0) or 0)
+        run_seq = [base_dur] * max(1, rep)
+
+    prof_cfg["run_sequence_sec"] = run_seq
     selected.append({**t, "effective_profile": prof_cfg})
 
 print(json.dumps(selected))
 PY
 )"
 
-TESTS_PLANNED="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$SELECTED_TESTS_JSON")"
-log_info "Selected $TESTS_PLANNED test(s) for profile='$TEST_PROFILE' (filter='$TEST_SUITE_FILTER')."
+TEST_GROUPS_PLANNED="$(python3 -c 'import json,sys; print(len(json.loads(sys.argv[1])))' "$SELECTED_TESTS_JSON")"
+TESTS_PLANNED="$(python3 -c 'import json,sys; print(sum(len(t["effective_profile"].get("run_sequence_sec",[0])) for t in json.loads(sys.argv[1])))' "$SELECTED_TESTS_JSON")"
+log_info "Selected $TEST_GROUPS_PLANNED test group(s) ($TESTS_PLANNED total benchmark run(s)) for profile='$TEST_PROFILE' (filter='$TEST_SUITE_FILTER')."
 
 # Create batch record in perffarm_batches
 BATCH_ID="$(python3 - "$METRICS_PSQL" "$METRICS_DB_CONNINFO" "$METRICS_DB_SCHEMA" \
@@ -1042,13 +1174,13 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Step 5: Per-Test Execution Loop
+# Step 5: Per-Test Execution Loop (with Multi-Run / Duration Sequence Support)
 # -----------------------------------------------------------------------------
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
-for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
+for idx in $(seq 0 $((TEST_GROUPS_PLANNED - 1))); do
     TEST_OBJ="$(python3 -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])[int(sys.argv[2])]))' "$SELECTED_TESTS_JSON" "$idx")"
     TEST_NAME="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["name"])' "$TEST_OBJ")"
     SUITE_NAME="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["suite"])' "$TEST_OBJ")"
@@ -1062,26 +1194,33 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
     SCALE="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["effective_profile"].get("scale",1))' "$TEST_OBJ")"
     CLIENTS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["effective_profile"].get("clients",4))' "$TEST_OBJ")"
     THREADS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["effective_profile"].get("threads",2))' "$TEST_OBJ")"
-    DURATION_SEC="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["effective_profile"].get("duration_sec",0))' "$TEST_OBJ")"
     TRANSACTIONS="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["effective_profile"].get("transactions",0))' "$TEST_OBJ")"
+    RUN_SEQ_STR="$(python3 -c 'import json,sys; print(" ".join(str(x) for x in json.loads(sys.argv[1])["effective_profile"].get("run_sequence_sec",[0])))' "$TEST_OBJ")"
+    read -r -a RUN_SEQ_ARRAY <<< "$RUN_SEQ_STR"
+    NUM_SEQ_RUNS="${#RUN_SEQ_ARRAY[@]}"
 
-    TEST_DIR="$BATCH_DIR/$(printf '%02d' $((idx + 1)))_${TEST_NAME}"
-    mkdir -p "$TEST_DIR"
-    SERVER_LOG="$TEST_DIR/postgres.log"
-    REPORT_JSON="$TEST_DIR/report.json"
-    PRE_SNAP="$TEST_DIR/pg_stats_pre.json"
-    POST_SNAP="$TEST_DIR/pg_stats_post.json"
-    DELTA_JSON="$TEST_DIR/pg_stats_delta.json"
-    BUNDLE_JSON="$TEST_DIR/test_result_bundle.json"
-    RUN_LABEL="${ANIMAL_NAME}:b${BATCH_ID}:${TEST_NAME}:${GIT_SHA:0:8}"
+    GROUP_PREFIX="$(printf '%02d' $((idx + 1)))_${TEST_NAME}"
+    if [[ "$NUM_SEQ_RUNS" -eq 1 ]]; then
+        BASE_TEST_DIR="$BATCH_DIR/$GROUP_PREFIX"
+        mkdir -p "$BASE_TEST_DIR"
+        LIVE_SERVER_LOG="$BASE_TEST_DIR/postgres.log"
+        INIT_LOG="$BASE_TEST_DIR/init.log"
+        PROBE_ERR_FILE="$BASE_TEST_DIR/feature_probe.err"
+    else
+        BASE_TEST_DIR="$BATCH_DIR/${GROUP_PREFIX}_run01_${RUN_SEQ_ARRAY[0]}s"
+        mkdir -p "$BASE_TEST_DIR"
+        LIVE_SERVER_LOG="$BATCH_DIR/${GROUP_PREFIX}_postgres.log"
+        INIT_LOG="$BATCH_DIR/${GROUP_PREFIX}_init.log"
+        PROBE_ERR_FILE="$BASE_TEST_DIR/feature_probe.err"
+    fi
 
     log_info "------------------------------------------------------------------"
-    log_info "[$((idx + 1))/$TESTS_PLANNED] Starting test '$TEST_NAME' (suite=$SUITE_NAME, scale=$SCALE, clients=$CLIENTS, threads=$THREADS)"
+    log_info "[$((idx + 1))/$TEST_GROUPS_PLANNED] Preparing test '$TEST_NAME' (suite=$SUITE_NAME, scale=$SCALE, clients=$CLIENTS, threads=$THREADS, runs=${NUM_SEQ_RUNS}: [${RUN_SEQ_ARRAY[*]}]s)"
 
-    TEST_START_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    GROUP_START_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
     # 5a. Configure & Start Server, Verify Readiness
-    apply_server_config_and_restart "$SERVER_LOG" "$GUC_OVERRIDES_JSON"
+    apply_server_config_and_restart "$LIVE_SERVER_LOG" "$GUC_OVERRIDES_JSON"
 
     # 5b. Probe Required Extensions & Optional SQL Features
     SKIP_REASON=""
@@ -1096,8 +1235,8 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
 
     if [[ -z "$SKIP_REASON" && -n "$FEATURE_PROBE_SQL" ]]; then
         if ! "$PG_PSQL" -X -q -v ON_ERROR_STOP=1 -h "$SERVER_HOST" -p "$PGPORT" -d postgres \
-            -c "$FEATURE_PROBE_SQL" >/dev/null 2>"$TEST_DIR/feature_probe.err"; then
-            SKIP_REASON="Optional SQL feature unsupported on this branch: $(head -n 1 "$TEST_DIR/feature_probe.err")"
+            -c "$FEATURE_PROBE_SQL" >/dev/null 2>"$PROBE_ERR_FILE"; then
+            SKIP_REASON="Optional SQL feature unsupported on this branch: $(head -n 1 "$PROBE_ERR_FILE")"
         fi
     fi
 
@@ -1108,26 +1247,26 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
             --batch-id="$BATCH_ID" \
             --test-name="$TEST_NAME" \
             --suite-name="$SUITE_NAME" \
-            --run-label="$RUN_LABEL" \
+            --run-label="${ANIMAL_NAME}:b${BATCH_ID}:${TEST_NAME}:${GIT_SHA:0:8}" \
             --status-override="SKIPPED" \
             --skip-reason="$SKIP_REASON" \
             --scale="$SCALE" \
             --clients="$CLIENTS" \
             --threads="$THREADS" \
-            --started-at="$TEST_START_ISO" \
+            --started-at="$GROUP_START_ISO" \
             --ended-at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
             --baseline-calibration="$CALIBRATION_JSON" \
             --server-info="$STATE_DIR/server_instance_info.json" \
             --client-info="$STATE_DIR/client_instance_info.json" \
-            --bundle-output="$BUNDLE_JSON" \
+            --bundle-output="$BASE_TEST_DIR/test_result_bundle.json" \
             --psql-bin="$METRICS_PSQL" \
             --metrics-db-conninfo="$METRICS_DB_CONNINFO" \
             --metrics-db-schema="$METRICS_DB_SCHEMA" >/dev/null
-        TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+        TESTS_SKIPPED=$((TESTS_SKIPPED + NUM_SEQ_RUNS))
         continue
     fi
 
-    # 5c. Initialize Benchmark Database (or Clone Cached Template DB)
+    # 5c. Initialize Benchmark Database ONCE per test group (or Clone Cached Template DB)
     BENCH_DB="perffarm_bench"
     "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d postgres \
         -c "DROP DATABASE IF EXISTS \"${BENCH_DB}\" WITH (FORCE);" >/dev/null 2>&1 || \
@@ -1148,7 +1287,7 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
             (
                 cd "$REPO_ROOT/src/bin/pgbench"
                 "$PGBENCH_BIN" --config="$REPO_ROOT/$CONFIG_REL" -i -s "$SCALE" \
-                    -h "$SERVER_HOST" -p "$PGPORT" "$TPL_DB" >"$TEST_DIR/init.log" 2>&1
+                    -h "$SERVER_HOST" -p "$PGPORT" "$TPL_DB" >"$INIT_LOG" 2>&1
             ) || INIT_OK=false
             if [[ "$INIT_OK" == "true" ]]; then
                 "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$TPL_DB" \
@@ -1165,12 +1304,12 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
     else
         "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d postgres -c "CREATE DATABASE \"${BENCH_DB}\";"
         if [[ -n "$BUILTIN_NAME" ]]; then
-            "$PGBENCH_BIN" -i -q -s "$SCALE" -h "$SERVER_HOST" -p "$PGPORT" "$BENCH_DB" >"$TEST_DIR/init.log" 2>&1 || INIT_OK=false
+            "$PGBENCH_BIN" -i -q -s "$SCALE" -h "$SERVER_HOST" -p "$PGPORT" "$BENCH_DB" >"$INIT_LOG" 2>&1 || INIT_OK=false
         else
             (
                 cd "$REPO_ROOT/src/bin/pgbench"
                 "$PGBENCH_BIN" --config="$REPO_ROOT/$CONFIG_REL" -i -s "$SCALE" \
-                    -h "$SERVER_HOST" -p "$PGPORT" "$BENCH_DB" >"$TEST_DIR/init.log" 2>&1
+                    -h "$SERVER_HOST" -p "$PGPORT" "$BENCH_DB" >"$INIT_LOG" 2>&1
             ) || INIT_OK=false
         fi
     fi
@@ -1179,13 +1318,19 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
     INIT_DURATION_SEC="$(python3 -c "print(round(($INIT_END_NS - $INIT_START_NS) / 1e9, 4))")"
 
     if [[ "$INIT_OK" != "true" ]]; then
-        log_info "[$TEST_NAME] ERROR: Database initialization failed (see $TEST_DIR/init.log)"
+        log_info "[$TEST_NAME] ERROR: Database initialization failed (see $INIT_LOG)"
         stop_existing_bench_server
+        if [[ "$TOPOLOGY" == "remote-server" || "$TOPOLOGY" == "both-remote" ]]; then
+            # shellcheck disable=SC2086
+            scp -q $SERVER_SSH_OPTS "$SERVER_SSH_TARGET:$SERVER_WORKDIR/postgres_current.log" "$BASE_TEST_DIR/postgres.log" || true
+        elif [[ "$LIVE_SERVER_LOG" != "$BASE_TEST_DIR/postgres.log" && -f "$LIVE_SERVER_LOG" ]]; then
+            cp "$LIVE_SERVER_LOG" "$BASE_TEST_DIR/postgres.log" || true
+        fi
         python3 "$SCRIPT_DIR/verify_test_run.py" \
             --batch-id="$BATCH_ID" \
             --test-name="$TEST_NAME" \
             --suite-name="$SUITE_NAME" \
-            --run-label="$RUN_LABEL" \
+            --run-label="${ANIMAL_NAME}:b${BATCH_ID}:${TEST_NAME}:${GIT_SHA:0:8}" \
             --status-override="FAILED" \
             --skip-reason="Database initialization failed" \
             --exit-code=1 \
@@ -1193,8 +1338,226 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
             --clients="$CLIENTS" \
             --threads="$THREADS" \
             --init-duration-sec="$INIT_DURATION_SEC" \
+            --started-at="$GROUP_START_ISO" \
+            --ended-at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --baseline-calibration="$CALIBRATION_JSON" \
+            --server-info="$STATE_DIR/server_instance_info.json" \
+            --client-info="$STATE_DIR/client_instance_info.json" \
+            --server-log="$BASE_TEST_DIR/postgres.log" \
+            --bundle-output="$BASE_TEST_DIR/test_result_bundle.json" \
+            --psql-bin="$METRICS_PSQL" \
+            --metrics-db-conninfo="$METRICS_DB_CONNINFO" \
+            --metrics-db-schema="$METRICS_DB_SCHEMA" || true
+        TESTS_FAILED=$((TESTS_FAILED + NUM_SEQ_RUNS))
+        continue
+    fi
+
+    # Initial VACUUM ANALYZE & pg_stat_statements extension creation on freshly prepared DB
+    "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
+        -c "VACUUM ANALYZE;" >/dev/null 2>&1 || true
+    HAS_PGSS_LIB="$("$PG_PSQL" -X -q -t -A -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT count(*) FROM pg_settings WHERE name = 'shared_preload_libraries' AND setting LIKE '%pg_stat_statements%';" || echo "0")"
+    if [[ "${HAS_PGSS_LIB:-0}" -gt 0 ]]; then
+        "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
+            -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" >/dev/null 2>&1 || true
+    fi
+
+    # Execute the configured sequence of runs against the prepared database without re-initializing
+    for seq_idx in $(seq 0 $((NUM_SEQ_RUNS - 1))); do
+        RUN_NUM=$((seq_idx + 1))
+        DURATION_SEC="${RUN_SEQ_ARRAY[$seq_idx]}"
+
+        if [[ "$NUM_SEQ_RUNS" -eq 1 ]]; then
+            TEST_DIR="$BATCH_DIR/$GROUP_PREFIX"
+            RUN_LABEL="${ANIMAL_NAME}:b${BATCH_ID}:${TEST_NAME}:${GIT_SHA:0:8}"
+        else
+            TEST_DIR="$BATCH_DIR/${GROUP_PREFIX}_run$(printf '%02d' "$RUN_NUM")_${DURATION_SEC}s"
+            RUN_LABEL="${ANIMAL_NAME}:b${BATCH_ID}:${TEST_NAME}:r${RUN_NUM}_${DURATION_SEC}s:${GIT_SHA:0:8}"
+        fi
+        mkdir -p "$TEST_DIR"
+        if [[ "$INIT_LOG" != "$TEST_DIR/init.log" && -f "$INIT_LOG" ]]; then
+            cp "$INIT_LOG" "$TEST_DIR/init.log" || true
+        fi
+
+        SERVER_LOG="$TEST_DIR/postgres.log"
+        REPORT_JSON="$TEST_DIR/report.json"
+        PRE_SNAP="$TEST_DIR/pg_stats_pre.json"
+        POST_SNAP="$TEST_DIR/pg_stats_post.json"
+        DELTA_JSON="$TEST_DIR/pg_stats_delta.json"
+        BUNDLE_JSON="$TEST_DIR/test_result_bundle.json"
+
+        TEST_START_ISO="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+        # 5d. CHECKPOINT & Reset Stats before each run on the prepared database
+        "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
+            -c "CHECKPOINT;" \
+            -c "SELECT pg_stat_reset(); SELECT pg_stat_reset_shared('bgwriter'); SELECT pg_stat_reset_shared('wal');" >/dev/null 2>&1 || true
+        if [[ "$PG_MAJOR" -ge 16 ]]; then
+            "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('io');" >/dev/null 2>&1 || true
+        fi
+        if [[ "$PG_MAJOR" -ge 17 ]]; then
+            "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('checkpointer');" >/dev/null 2>&1 || true
+        fi
+        if [[ "${HAS_PGSS_LIB:-0}" -gt 0 ]]; then
+            "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
+                -c "SELECT pg_stat_statements_reset();" >/dev/null 2>&1 || true
+        fi
+
+        # 5e. Capture Pre-Benchmark pg_stat_* & OS Snapshot
+        python3 "$SCRIPT_DIR/collect_pg_stats.py" snapshot \
+            --phase=pre \
+            --psql-bin="$PG_PSQL" \
+            --host="$SERVER_HOST" \
+            --port="$PGPORT" \
+            --dbname="$BENCH_DB" \
+            ${SERVER_SSH_TARGET:+--server-ssh-target="$SERVER_SSH_TARGET"} \
+            ${CLIENT_SSH_TARGET:+--client-ssh-target="$CLIENT_SSH_TARGET"} \
+            --output="$PRE_SNAP"
+
+        # 5f. Build & Execute pgbench Benchmark Command (Locally or on Remote Client)
+        IS_REMOTE_CLIENT=false
+        if [[ "$TOPOLOGY" == "remote-client" || "$TOPOLOGY" == "both-remote" ]]; then
+            IS_REMOTE_CLIENT=true
+            CLIENT_TEST_DIR="$CLIENT_WORKDIR/test_${BATCH_ID}_${idx}_${RUN_NUM}_${TEST_NAME}"
+            run_on_client "rm -rf '$CLIENT_TEST_DIR' && mkdir -p '$CLIENT_TEST_DIR'"
+            EFFECTIVE_REPORT_JSON="$CLIENT_TEST_DIR/report.json"
+            EFFECTIVE_LOG_PREFIX="$CLIENT_TEST_DIR/pgbench_log"
+            CLIENT_REPO_DIR="$(run_on_client "if [[ -d '$CLIENT_WORKDIR/pgbench4perffarm/src/bin/pgbench' ]]; then echo '$CLIENT_WORKDIR/pgbench4perffarm'; else echo '$REPO_ROOT'; fi")"
+        else
+            EFFECTIVE_REPORT_JSON="$REPORT_JSON"
+            EFFECTIVE_LOG_PREFIX="$TEST_DIR/pgbench_log"
+            CLIENT_REPO_DIR="$REPO_ROOT"
+        fi
+
+        PGBENCH_ARGS=(
+            -h "$SERVER_HOST"
+            -p "$PGPORT"
+            -s "$SCALE"
+            -D "scale=$SCALE"
+            -c "$CLIENTS"
+            -j "$THREADS"
+            --max-tries=3
+            -r
+            --log-db="$METRICS_DB_CONNINFO"
+            --log-db-schema="$METRICS_DB_SCHEMA"
+            --log-db-mode="${LOG_DB_MODE:-stream}"
+            --log-db-unlogged="${LOG_DB_UNLOGGED:-stream}"
+            --run-label="$RUN_LABEL"
+            --json-report="$EFFECTIVE_REPORT_JSON"
+        )
+
+        if [[ "$DURATION_SEC" -gt 0 ]]; then
+            PGBENCH_ARGS+=(-T "$DURATION_SEC")
+        elif [[ "$TRANSACTIONS" -gt 0 ]]; then
+            PGBENCH_ARGS+=(-t "$TRANSACTIONS")
+        fi
+
+        case "${METRICS_LEVEL:-timeseries}" in
+            summary)
+                ;;
+            timeseries)
+                PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --aggregate-interval=1)
+                ;;
+            full-trace)
+                PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --log-db-index)
+                ;;
+        esac
+
+        if [[ -n "$BUILTIN_NAME" ]]; then
+            PGBENCH_ARGS+=(-b "$BUILTIN_NAME")
+        else
+            PGBENCH_ARGS=(--config="$CLIENT_REPO_DIR/$CONFIG_REL" "${PGBENCH_ARGS[@]}")
+        fi
+        PGBENCH_ARGS+=("$BENCH_DB")
+
+        log_info "[$TEST_NAME] Run ${RUN_NUM}/${NUM_SEQ_RUNS} (duration=${DURATION_SEC}s, scale=$SCALE, clients=$CLIENTS, threads=$THREADS, label=$RUN_LABEL)..."
+        set +e
+        if [[ "$IS_REMOTE_CLIENT" == "true" ]]; then
+            QUOTED_PGBENCH="$(printf '%q ' "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}")"
+            CLIENT_FWD_OPTS=""
+            if [[ "${METRICS_DB_HOST:-127.0.0.1}" == "127.0.0.1" || "${METRICS_DB_HOST:-}" == "localhost" ]]; then
+                CLIENT_FWD_OPTS="-o ExitOnForwardFailure=no -R ${METRICS_DB_PORT:-55433}:127.0.0.1:${METRICS_DB_PORT:-55433}"
+            fi
+            # shellcheck disable=SC2086
+            ssh $CLIENT_SSH_OPTS $CLIENT_FWD_OPTS "$CLIENT_SSH_TARGET" \
+                "cd '$CLIENT_REPO_DIR/src/bin/pgbench' && $QUOTED_PGBENCH" \
+                >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
+            PGBENCH_EXIT=$?
+            # Retrieve report.json and any pgbench_log.* files from remote client
+            # shellcheck disable=SC2086
+            scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:$EFFECTIVE_REPORT_JSON" "$REPORT_JSON" 2>/dev/null || true
+            # shellcheck disable=SC2086
+            scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:${EFFECTIVE_LOG_PREFIX}*" "$TEST_DIR/" 2>/dev/null || true
+            run_on_client "rm -rf '$CLIENT_TEST_DIR'" >/dev/null 2>&1 || true
+        else
+            (
+                cd "$REPO_ROOT/src/bin/pgbench"
+                "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}" >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
+            )
+            PGBENCH_EXIT=$?
+        fi
+        set -e
+
+        # 5g. Capture Post-Benchmark pg_stat_* & OS Snapshot and Compute Delta
+        python3 "$SCRIPT_DIR/collect_pg_stats.py" snapshot \
+            --phase=post \
+            --psql-bin="$PG_PSQL" \
+            --host="$SERVER_HOST" \
+            --port="$PGPORT" \
+            --dbname="$BENCH_DB" \
+            ${SERVER_SSH_TARGET:+--server-ssh-target="$SERVER_SSH_TARGET"} \
+            ${CLIENT_SSH_TARGET:+--client-ssh-target="$CLIENT_SSH_TARGET"} \
+            --output="$POST_SNAP"
+
+        python3 "$SCRIPT_DIR/collect_pg_stats.py" delta \
+            --pre="$PRE_SNAP" \
+            --post="$POST_SNAP" \
+            --output="$DELTA_JSON"
+
+        # If this is the final run in the sequence for this prepared DB, drop bench_db and stop server cleanly
+        if [[ "$RUN_NUM" -eq "$NUM_SEQ_RUNS" ]]; then
+            "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d postgres \
+                -c "DROP DATABASE IF EXISTS \"${BENCH_DB}\";" >/dev/null 2>&1 || true
+            stop_existing_bench_server
+        fi
+
+        if [[ "$TOPOLOGY" == "remote-server" || "$TOPOLOGY" == "both-remote" ]]; then
+            # shellcheck disable=SC2086
+            scp -q $SERVER_SSH_OPTS "$SERVER_SSH_TARGET:$SERVER_WORKDIR/postgres_current.log" "$SERVER_LOG" || true
+        elif [[ "$LIVE_SERVER_LOG" != "$SERVER_LOG" && -f "$LIVE_SERVER_LOG" ]]; then
+            cp "$LIVE_SERVER_LOG" "$SERVER_LOG" || true
+        fi
+
+        # 5h. Verify Test Run (5-Point Check) & Record in perffarm_test_runs
+        EXTRA_VERIFY_FLAGS=(
+            --run-index="$RUN_NUM"
+            --total-runs-in-sequence="$NUM_SEQ_RUNS"
+            --target-duration-sec="$DURATION_SEC"
+        )
+        EFFECTIVE_RUN_INIT_DUR="$INIT_DURATION_SEC"
+        if [[ "$TEMPLATE_REUSED" == "true" ]]; then
+            EXTRA_VERIFY_FLAGS+=(--template-reused)
+        fi
+        if [[ "$RUN_NUM" -gt 1 ]]; then
+            EFFECTIVE_RUN_INIT_DUR="0.0"
+            EXTRA_VERIFY_FLAGS+=(--template-reused --prepared-db-reused)
+        fi
+
+        set +e
+        VERIFY_OUT="$(python3 "$SCRIPT_DIR/verify_test_run.py" \
+            --batch-id="$BATCH_ID" \
+            --test-name="$TEST_NAME" \
+            --suite-name="$SUITE_NAME" \
+            --run-label="$RUN_LABEL" \
+            --exit-code="$PGBENCH_EXIT" \
+            --scale="$SCALE" \
+            --clients="$CLIENTS" \
+            --threads="$THREADS" \
+            --init-duration-sec="$EFFECTIVE_RUN_INIT_DUR" \
+            "${EXTRA_VERIFY_FLAGS[@]}" \
             --started-at="$TEST_START_ISO" \
             --ended-at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+            --json-report="$REPORT_JSON" \
+            --pg-stats-delta="$DELTA_JSON" \
             --baseline-calibration="$CALIBRATION_JSON" \
             --server-info="$STATE_DIR/server_instance_info.json" \
             --client-info="$STATE_DIR/client_instance_info.json" \
@@ -1202,194 +1565,29 @@ for idx in $(seq 0 $((TESTS_PLANNED - 1))); do
             --bundle-output="$BUNDLE_JSON" \
             --psql-bin="$METRICS_PSQL" \
             --metrics-db-conninfo="$METRICS_DB_CONNINFO" \
-            --metrics-db-schema="$METRICS_DB_SCHEMA" || true
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-        continue
-    fi
+            --metrics-db-schema="$METRICS_DB_SCHEMA")"
+        VERIFY_RC=$?
+        set -e
 
-    # 5d. Prepare Benchmark Database: VACUUM ANALYZE, CHECKPOINT & Reset Stats
-    "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
-        -c "VACUUM ANALYZE;" \
-        -c "CHECKPOINT;" \
-        -c "SELECT pg_stat_reset(); SELECT pg_stat_reset_shared('bgwriter'); SELECT pg_stat_reset_shared('wal');" >/dev/null 2>&1 || true
-    if [[ "$PG_MAJOR" -ge 16 ]]; then
-        "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('io');" >/dev/null 2>&1 || true
-    fi
-    if [[ "$PG_MAJOR" -ge 17 ]]; then
-        "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('checkpointer');" >/dev/null 2>&1 || true
-    fi
-    HAS_PGSS_LIB="$("$PG_PSQL" -X -q -t -A -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT count(*) FROM pg_settings WHERE name = 'shared_preload_libraries' AND setting LIKE '%pg_stat_statements%';" || echo "0")"
-    if [[ "${HAS_PGSS_LIB:-0}" -gt 0 ]]; then
-        "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
-            -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements; SELECT pg_stat_statements_reset();" >/dev/null 2>&1 || true
-    fi
-
-    # 5e. Capture Pre-Benchmark pg_stat_* & OS Snapshot
-    python3 "$SCRIPT_DIR/collect_pg_stats.py" snapshot \
-        --phase=pre \
-        --psql-bin="$PG_PSQL" \
-        --host="$SERVER_HOST" \
-        --port="$PGPORT" \
-        --dbname="$BENCH_DB" \
-        ${SERVER_SSH_TARGET:+--server-ssh-target="$SERVER_SSH_TARGET"} \
-        ${CLIENT_SSH_TARGET:+--client-ssh-target="$CLIENT_SSH_TARGET"} \
-        --output="$PRE_SNAP"
-
-    # 5f. Build & Execute pgbench Benchmark Command (Locally or on Remote Client)
-    IS_REMOTE_CLIENT=false
-    if [[ "$TOPOLOGY" == "remote-client" || "$TOPOLOGY" == "both-remote" ]]; then
-        IS_REMOTE_CLIENT=true
-        CLIENT_TEST_DIR="$CLIENT_WORKDIR/test_${BATCH_ID}_${idx}_${TEST_NAME}"
-        run_on_client "rm -rf '$CLIENT_TEST_DIR' && mkdir -p '$CLIENT_TEST_DIR'"
-        EFFECTIVE_REPORT_JSON="$CLIENT_TEST_DIR/report.json"
-        EFFECTIVE_LOG_PREFIX="$CLIENT_TEST_DIR/pgbench_log"
-        CLIENT_REPO_DIR="$(run_on_client "if [[ -d '$CLIENT_WORKDIR/pgbench4perffarm/src/bin/pgbench' ]]; then echo '$CLIENT_WORKDIR/pgbench4perffarm'; else echo '$REPO_ROOT'; fi")"
-    else
-        EFFECTIVE_REPORT_JSON="$REPORT_JSON"
-        EFFECTIVE_LOG_PREFIX="$TEST_DIR/pgbench_log"
-        CLIENT_REPO_DIR="$REPO_ROOT"
-    fi
-
-    PGBENCH_ARGS=(
-        -h "$SERVER_HOST"
-        -p "$PGPORT"
-        -s "$SCALE"
-        -D "scale=$SCALE"
-        -c "$CLIENTS"
-        -j "$THREADS"
-        --max-tries=3
-        -r
-        --log-db="$METRICS_DB_CONNINFO"
-        --log-db-schema="$METRICS_DB_SCHEMA"
-        --log-db-mode="${LOG_DB_MODE:-stream}"
-        --log-db-unlogged="${LOG_DB_UNLOGGED:-stream}"
-        --run-label="$RUN_LABEL"
-        --json-report="$EFFECTIVE_REPORT_JSON"
-    )
-
-    if [[ "$DURATION_SEC" -gt 0 ]]; then
-        PGBENCH_ARGS+=(-T "$DURATION_SEC")
-    elif [[ "$TRANSACTIONS" -gt 0 ]]; then
-        PGBENCH_ARGS+=(-t "$TRANSACTIONS")
-    fi
-
-    case "${METRICS_LEVEL:-timeseries}" in
-        summary)
-            ;;
-        timeseries)
-            PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --aggregate-interval=1)
-            ;;
-        full-trace)
-            PGBENCH_ARGS+=(-P 1 -l --log-prefix="$EFFECTIVE_LOG_PREFIX" --log-db-index)
-            ;;
-    esac
-
-    if [[ -n "$BUILTIN_NAME" ]]; then
-        PGBENCH_ARGS+=(-b "$BUILTIN_NAME")
-    else
-        PGBENCH_ARGS=(--config="$CLIENT_REPO_DIR/$CONFIG_REL" "${PGBENCH_ARGS[@]}")
-    fi
-    PGBENCH_ARGS+=("$BENCH_DB")
-
-    log_info "[$TEST_NAME] Running benchmark (metrics_level=$METRICS_LEVEL, topology=$TOPOLOGY)..."
-    set +e
-    if [[ "$IS_REMOTE_CLIENT" == "true" ]]; then
-        QUOTED_PGBENCH="$(printf '%q ' "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}")"
-        CLIENT_FWD_OPTS=""
-        if [[ "${METRICS_DB_HOST:-127.0.0.1}" == "127.0.0.1" || "${METRICS_DB_HOST:-}" == "localhost" ]]; then
-            CLIENT_FWD_OPTS="-o ExitOnForwardFailure=no -R ${METRICS_DB_PORT:-55433}:127.0.0.1:${METRICS_DB_PORT:-55433}"
+        log_info "[$TEST_NAME] Run ${RUN_NUM}/${NUM_SEQ_RUNS} (${DURATION_SEC}s) verification: $VERIFY_OUT"
+        if [[ $VERIFY_RC -eq 0 ]]; then
+            TESTS_PASSED=$((TESTS_PASSED + 1))
+        else
+            TESTS_FAILED=$((TESTS_FAILED + 1))
         fi
-        # shellcheck disable=SC2086
-        ssh $CLIENT_SSH_OPTS $CLIENT_FWD_OPTS "$CLIENT_SSH_TARGET" \
-            "cd '$CLIENT_REPO_DIR/src/bin/pgbench' && $QUOTED_PGBENCH" \
-            >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
-        PGBENCH_EXIT=$?
-        # Retrieve report.json and any pgbench_log.* files from remote client
-        # shellcheck disable=SC2086
-        scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:$EFFECTIVE_REPORT_JSON" "$REPORT_JSON" 2>/dev/null || true
-        # shellcheck disable=SC2086
-        scp -q $CLIENT_SSH_OPTS "$CLIENT_SSH_TARGET:${EFFECTIVE_LOG_PREFIX}*" "$TEST_DIR/" 2>/dev/null || true
-        run_on_client "rm -rf '$CLIENT_TEST_DIR'" >/dev/null 2>&1 || true
-    else
-        (
-            cd "$REPO_ROOT/src/bin/pgbench"
-            "$PGBENCH_BIN" "${PGBENCH_ARGS[@]}" >"$TEST_DIR/pgbench.out" 2>"$TEST_DIR/pgbench.err"
-        )
-        PGBENCH_EXIT=$?
-    fi
-    set -e
 
-    # 5g. Capture Post-Benchmark pg_stat_* & OS Snapshot and Compute Delta
-    python3 "$SCRIPT_DIR/collect_pg_stats.py" snapshot \
-        --phase=post \
-        --psql-bin="$PG_PSQL" \
-        --host="$SERVER_HOST" \
-        --port="$PGPORT" \
-        --dbname="$BENCH_DB" \
-        ${SERVER_SSH_TARGET:+--server-ssh-target="$SERVER_SSH_TARGET"} \
-        ${CLIENT_SSH_TARGET:+--client-ssh-target="$CLIENT_SSH_TARGET"} \
-        --output="$POST_SNAP"
-
-    python3 "$SCRIPT_DIR/collect_pg_stats.py" delta \
-        --pre="$PRE_SNAP" \
-        --post="$POST_SNAP" \
-        --output="$DELTA_JSON"
-
-    # Drop working bench_db (preserving cached template DBs if any) and stop server cleanly
-    "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d postgres \
-        -c "DROP DATABASE IF EXISTS \"${BENCH_DB}\";" >/dev/null 2>&1 || true
-    stop_existing_bench_server
-
-    if [[ "$TOPOLOGY" == "remote-server" || "$TOPOLOGY" == "both-remote" ]]; then
-        # shellcheck disable=SC2086
-        scp -q $SERVER_SSH_OPTS "$SERVER_SSH_TARGET:$SERVER_WORKDIR/postgres_current.log" "$SERVER_LOG" || true
-    fi
-
-    # 5h. Verify Test Run (5-Point Check) & Record in perffarm_test_runs
-    TPL_FLAG=""
-    [[ "$TEMPLATE_REUSED" == "true" ]] && TPL_FLAG="--template-reused"
-
-    set +e
-    VERIFY_OUT="$(python3 "$SCRIPT_DIR/verify_test_run.py" \
-        --batch-id="$BATCH_ID" \
-        --test-name="$TEST_NAME" \
-        --suite-name="$SUITE_NAME" \
-        --run-label="$RUN_LABEL" \
-        --exit-code="$PGBENCH_EXIT" \
-        --scale="$SCALE" \
-        --clients="$CLIENTS" \
-        --threads="$THREADS" \
-        --init-duration-sec="$INIT_DURATION_SEC" \
-        ${TPL_FLAG:+$TPL_FLAG} \
-        --started-at="$TEST_START_ISO" \
-        --ended-at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-        --json-report="$REPORT_JSON" \
-        --pg-stats-delta="$DELTA_JSON" \
-        --baseline-calibration="$CALIBRATION_JSON" \
-        --server-info="$STATE_DIR/server_instance_info.json" \
-        --client-info="$STATE_DIR/client_instance_info.json" \
-        --server-log="$SERVER_LOG" \
-        --bundle-output="$BUNDLE_JSON" \
-        --psql-bin="$METRICS_PSQL" \
-        --metrics-db-conninfo="$METRICS_DB_CONNINFO" \
-        --metrics-db-schema="$METRICS_DB_SCHEMA")"
-    VERIFY_RC=$?
-    set -e
-
-    log_info "[$TEST_NAME] Verification result: $VERIFY_OUT"
-    if [[ $VERIFY_RC -eq 0 ]]; then
-        TESTS_PASSED=$((TESTS_PASSED + 1))
-    else
-        TESTS_FAILED=$((TESTS_FAILED + 1))
-    fi
-
-    # 5i. Upload Per-Test Result
-    bash "$SCRIPT_DIR/upload_results.sh" \
-        --config="$CONF_FILE" \
-        --test-dir="$TEST_DIR" \
-        --upload-level="${UPLOAD_LEVEL:-timeseries}" \
-        --psql-bin="$METRICS_PSQL"
+        # 5i. Upload Per-Test Result
+        bash "$SCRIPT_DIR/upload_results.sh" \
+            --config="$CONF_FILE" \
+            --test-dir="$TEST_DIR" \
+            --upload-level="${UPLOAD_LEVEL:-timeseries}" \
+            --psql-bin="$METRICS_PSQL"
+    done
 done
+
+# Reclaim benchmark data & WAL directories after all tests in the batch complete
+stop_existing_bench_server
+run_on_server "rm -rf '$PGDATA_DIR' '$PGWAL_DIR'" >/dev/null 2>&1 || true
 
 # -----------------------------------------------------------------------------
 # Step 6: Finalize Batch, Package Archive, Upload & Optional Cloud Teardown

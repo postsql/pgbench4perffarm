@@ -117,14 +117,16 @@ Key settings in `perffarm/conf/animal.conf`:
     --server-ssh=ubuntu@10.128.0.10 \
     --profile=standard
 
-# Run a historical multi-commit series (e.g., 24-hour interval checkouts on master):
+# Run a historical multi-commit series (e.g., 24-hour interval checkouts on master)
+# with three 60s runs followed by one 300s run per prepared database:
 ./perffarm/run_perffarm.sh \
     --config=perffarm/conf/animal.conf \
     --branch=master \
-    --commits-file=commits_24h_last_month.txt \
+    --commits-file=perffarm/conf/commits_master_24h_last_month.txt \
     --ci-status=github_success \
     --tests=pgbench-c \
-    --profile=standard
+    --profile=standard \
+    --durations=60,60,60,300
 ```
 
 ---

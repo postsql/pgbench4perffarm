@@ -201,6 +201,10 @@ def main() -> int:
     parser.add_argument("--threads", type=int, default=1)
     parser.add_argument("--init-duration-sec", type=float, default=0.0)
     parser.add_argument("--template-reused", action="store_true")
+    parser.add_argument("--prepared-db-reused", action="store_true")
+    parser.add_argument("--run-index", type=int, default=1)
+    parser.add_argument("--total-runs-in-sequence", type=int, default=1)
+    parser.add_argument("--target-duration-sec", type=int, default=0)
     parser.add_argument("--started-at", default="")
     parser.add_argument("--ended-at", default="")
     parser.add_argument("--json-report", default="")
@@ -227,6 +231,10 @@ def main() -> int:
         verification_details = {
             "status": "SKIPPED",
             "reason": args.skip_reason or "Unsupported optional SQL feature or extension",
+            "sequence_run_index": args.run_index,
+            "sequence_total_runs": args.total_runs_in_sequence,
+            "target_duration_sec": args.target_duration_sec,
+            "prepared_db_reused": bool(args.prepared_db_reused),
             "checks": {},
         }
         duration_sec = 0.0
@@ -265,6 +273,10 @@ def main() -> int:
         verification_details = {
             "status": verification_status,
             "failure_reasons": failure_reasons,
+            "sequence_run_index": args.run_index,
+            "sequence_total_runs": args.total_runs_in_sequence,
+            "target_duration_sec": args.target_duration_sec or int(round(duration_sec)),
+            "prepared_db_reused": bool(args.prepared_db_reused),
             "checks": {
                 "1_exit_code_zero": {
                     "passed": chk_exit,
@@ -348,6 +360,9 @@ def main() -> int:
             {
                 "test_run_id": test_run_id,
                 "test_name": args.test_name,
+                "run_index": args.run_index,
+                "total_runs_in_sequence": args.total_runs_in_sequence,
+                "duration_sec": round(duration_sec, 2),
                 "verification_status": verification_status,
                 "tps": report.get("overall", {}).get("tps"),
                 "failure_reasons": verification_details.get("failure_reasons", []),

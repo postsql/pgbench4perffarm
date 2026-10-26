@@ -159,6 +159,8 @@ METRICS_DB_CONNINFO="${METRICS_DB_CONNINFO:-host=$METRICS_DB_HOST port=$METRICS_
 TEST_MATRIX_FILE="${TEST_MATRIX_FILE:-}"            # Defaults to perffarm/conf/test_matrix.json
 TEST_PROFILE="${TEST_PROFILE:-standard}"            # "smoke" | "standard" | "nightly"
 TEST_SUITE_FILTER="${TEST_SUITE_FILTER:-all}"       # "all" or comma-separated test/suite names
+TEST_DURATION_SEQUENCE="${TEST_DURATION_SEQUENCE:-}" # Optional sequence of durations (sec) per prepared DB, e.g. "60,60,60,300" or "60x3,300"
+TEST_REPEATS="${TEST_REPEATS:-1}"                   # Number of consecutive runs per prepared DB when TEST_DURATION_SEQUENCE is empty
 REUSE_TEMPLATE_DB="${REUSE_TEMPLATE_DB:-true}"      # Cache & clone initialized DBs for multi-test suites
 
 # Baseline client-to-server latency & bandwidth calibration before benchmarks:

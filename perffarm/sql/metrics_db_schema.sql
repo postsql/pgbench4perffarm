@@ -1115,25 +1115,47 @@ RETURNS TABLE (
     pct_change   double precision,
     verdict      text
 ) LANGUAGE sql STABLE AS $func$
-WITH latest_a AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec)
-        s.*
+WITH latest_batch_a AS (
+    SELECT DISTINCT ON (s.animal_name, s.test_name)
+        s.animal_name,
+        s.test_name,
+        s.batch_id
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_a || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
       AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec, s.batch_id DESC, s.test_run_id DESC
+    ORDER BY s.animal_name, s.test_name, s.batch_id DESC
 ),
-latest_b AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec)
-        s.*
+latest_a AS (
+    SELECT s.*
+    FROM perffarm_commit_summary_v s
+    JOIN latest_batch_a lb
+      ON lb.animal_name = s.animal_name
+     AND lb.test_name = s.test_name
+     AND lb.batch_id = s.batch_id
+    WHERE s.tps IS NOT NULL
+),
+latest_batch_b AS (
+    SELECT DISTINCT ON (s.animal_name, s.test_name)
+        s.animal_name,
+        s.test_name,
+        s.batch_id
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_b || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
       AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec, s.batch_id DESC, s.test_run_id DESC
+    ORDER BY s.animal_name, s.test_name, s.batch_id DESC
+),
+latest_b AS (
+    SELECT s.*
+    FROM perffarm_commit_summary_v s
+    JOIN latest_batch_b lb
+      ON lb.animal_name = s.animal_name
+     AND lb.test_name = s.test_name
+     AND lb.batch_id = s.batch_id
+    WHERE s.tps IS NOT NULL
 ),
 paired AS (
     SELECT

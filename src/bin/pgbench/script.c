@@ -26,6 +26,7 @@
 #include "script.h"
 
 QueryMode querymode = QUERY_SIMPLE;
+bool querymode_explicitly_set = false;
 const char *const QUERYMODE[] = {"simple", "extended", "prepared"};
 
 ParsedScript sql_script[MAX_SCRIPTS];	/* SQL script files */
@@ -2766,7 +2767,10 @@ parseQuery(Command *cmd)
 			return false;
 		}
 
-		sprintf(var, "$%d", cmd->argc);
+		if (active_driver->caps.param_style == PGBENCH_PARAM_AT_P)
+			sprintf(var, "@p%d", cmd->argc);
+		else
+			sprintf(var, "$%d", cmd->argc);
 		p = replaceVariable(&sql, p, eaten, var);
 
 		cmd->argv[cmd->argc] = name;

@@ -40,10 +40,10 @@ typedef struct CommandDescriptor
 /* Public Command Execution APIs */
 extern ConnectionStateEnum executeMetaCommand(CState *st, pg_time_usec_t *now);
 extern void skipConditionalCommands(CState *st);
-extern bool processGSetResult(CState *st, Command *command, PGresult *res,
+extern bool processGSetResult(CState *st, Command *command, PgBenchResult *res,
 							  bool is_last, int qrynum);
 extern bool populateGSetMeta(CState *st, const char *prefix);
-extern bool processGSetMetaResult(CState *st, Command *command, PGresult *res);
+extern bool processGSetMetaResult(CState *st, Command *command, PgBenchResult *res);
 
 /* Helper APIs for commands */
 extern void commandFailed(CState *st, const char *cmd, const char *message);

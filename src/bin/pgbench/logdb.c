@@ -152,7 +152,11 @@ connectLogDb(bool fail_fast, bool create_schema_if_needed)
 
 	if (pg_strcasecmp(log_db_conninfo, "self") == 0 ||
 		*log_db_conninfo == '\0')
-		conn = doConnect();
+	{
+		if (active_driver != &postgres_driver)
+			pg_fatal("--log-db=self is only supported with the \"postgres\" driver (use --log-db=<postgres-conninfo>)");
+		conn = doConnectCustom(NULL);
+	}
 	else
 		conn = doConnectCustom(log_db_conninfo);
 

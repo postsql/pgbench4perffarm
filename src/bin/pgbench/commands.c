@@ -214,14 +214,14 @@ prepareCommand(CState *st, int command_num)
 
 	if (!st->prepared[st->use_file][command_num])
 	{
-		PGresult   *res;
+		PgBenchResult *res;
 
 		pg_log_debug("client %d preparing %s", st->id, command->prepname);
-		res = PQprepare(st->con, command->prepname,
-						command->argv[0], command->argc - 1, NULL);
-		if (PQresultStatus(res) != PGRES_COMMAND_OK)
-			pg_log_error("%s", PQerrorMessage(st->con));
-		PQclear(res);
+		res = active_driver->prepare_sync(st->con, command->prepname,
+										  command->argv[0], command->argc - 1);
+		if (active_driver->result_status(res) != PGBENCH_RES_COMMAND_OK)
+			pg_log_error("%s", active_driver->error_message(st->con));
+		active_driver->clear_result(res);
 		st->prepared[st->use_file][command_num] = true;
 	}
 }
@@ -763,7 +763,7 @@ handle_cmd_gset_meta(CState *st, Command *cmd, pg_time_usec_t *now)
 {
 	const char *prefix = (cmd->argc > 1) ? cmd->argv[1] : "";
 
-	if (PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+	if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 	{
 		commandFailed(st, "gset_meta", "\\gset_meta is not allowed in pipeline mode");
 		return CSTATE_ABORTED;
@@ -804,7 +804,7 @@ ConnectionStateEnum
 handle_cmd_startpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 {
 	/*
-	 * In pipeline mode, we use a workflow based on libpq pipeline functions.
+	 * In pipeline mode, we use a workflow based on driver pipeline functions.
 	 */
 	if (querymode == QUERY_SIMPLE)
 	{
@@ -822,12 +822,12 @@ handle_cmd_startpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 	if (querymode == QUERY_PREPARED)
 		prepareCommandsInPipeline(st);
 
-	if (PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+	if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 	{
 		commandFailed(st, "startpipeline", "already in pipeline mode");
 		return CSTATE_ABORTED;
 	}
-	if (PQenterPipelineMode(st->con) == 0)
+	if (!active_driver->enter_pipeline_mode(st->con))
 	{
 		commandFailed(st, "startpipeline", "failed to enter pipeline mode");
 		return CSTATE_ABORTED;
@@ -838,12 +838,12 @@ handle_cmd_startpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 ConnectionStateEnum
 handle_cmd_syncpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 {
-	if (PQpipelineStatus(st->con) != PQ_PIPELINE_ON)
+	if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_ON)
 	{
 		commandFailed(st, "syncpipeline", "not in pipeline mode");
 		return CSTATE_ABORTED;
 	}
-	if (PQsendPipelineSync(st->con) == 0)
+	if (!active_driver->send_pipeline_sync(st->con))
 	{
 		commandFailed(st, "syncpipeline", "failed to send a pipeline sync");
 		return CSTATE_ABORTED;
@@ -855,18 +855,18 @@ handle_cmd_syncpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 ConnectionStateEnum
 handle_cmd_endpipeline(CState *st, Command *cmd, pg_time_usec_t *now)
 {
-	if (PQpipelineStatus(st->con) != PQ_PIPELINE_ON)
+	if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_ON)
 	{
 		commandFailed(st, "endpipeline", "not in pipeline mode");
 		return CSTATE_ABORTED;
 	}
-	if (!PQpipelineSync(st->con))
+	if (!active_driver->pipeline_sync(st->con))
 	{
 		commandFailed(st, "endpipeline", "failed to send a pipeline sync");
 		return CSTATE_ABORTED;
 	}
 	st->num_syncs++;
-	/* Now wait for the PGRES_PIPELINE_SYNC and exit pipeline mode there */
+	/* Now wait for the PGBENCH_RES_PIPELINE_SYNC and exit pipeline mode there */
 	/* collect pending results before getting out of pipeline mode */
 	return CSTATE_WAIT_RESULT;
 }
@@ -929,13 +929,13 @@ handle_cmd_session_connect(CState *st, Command *cmd, pg_time_usec_t *now)
 
 	if (st->con != NULL)
 	{
-		if (PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+		if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 		{
 			commandFailed(st, "session_connect",
 						  "cannot reconnect while in pipeline mode");
 			return CSTATE_ABORTED;
 		}
-		PQfinish(st->con);
+		active_driver->finish(st->con);
 		st->con = NULL;
 		(void) __atomic_fetch_sub(&active_sessions_count, 1, __ATOMIC_RELEASE);
 		if (max_concurrent_sessions > 0)
@@ -954,7 +954,7 @@ handle_cmd_session_connect(CState *st, Command *cmd, pg_time_usec_t *now)
 ConnectionStateEnum
 handle_cmd_session_disconnect(CState *st, Command *cmd, pg_time_usec_t *now)
 {
-	if (st->con != NULL && PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+	if (st->con != NULL && active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 	{
 		commandFailed(st, "session_disconnect",
 					  "cannot disconnect while in pipeline mode");
@@ -1729,12 +1729,12 @@ storeGSetColumnValue(Variables *variables, const char *context,
  * Returns true if successful, false on error.
  */
 bool
-processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int qrynum)
+processGSetResult(CState *st, Command *command, PgBenchResult *res, bool is_last, int qrynum)
 {
 	MetaCommand meta = command->meta;
 	char	   *varprefix = command->varprefix;
-	int			ntuples = PQntuples(res);
-	int			nfields = PQnfields(res);
+	int			ntuples = active_driver->ntuples(res);
+	int			nfields = active_driver->nfields(res);
 	const char *context = (meta == META_ASET) ? "aset" :
 		(meta == META_GSET_COL) ? "gset_col" : "gset";
 	int			fld;
@@ -1765,7 +1765,7 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 
 		if (command->col_target != NULL)
 		{
-			int			fnum = PQfnumber(res, command->col_target);
+			int			fnum = active_driver->fnumber(res, command->col_target);
 
 			if (fnum >= 0)
 			{
@@ -1800,10 +1800,10 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 			elems = pg_malloc_array(PgBenchValue, ntuples);
 			for (int r = 0; r < ntuples; r++)
 			{
-				if (PQgetisnull(res, r, col_idx))
+				if (active_driver->get_is_null(res, r, col_idx))
 					setNullValue(&elems[r]);
 				else
-					parseResultCellValue(PQgetvalue(res, r, col_idx), &elems[r]);
+					parseResultCellValue(active_driver->get_value(res, r, col_idx), &elems[r]);
 			}
 		}
 
@@ -1854,7 +1854,7 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 
 		for (fld = 0; fld < nfields; fld++)
 		{
-			char	   *colname = PQfname(res, fld);
+			const char *colname = active_driver->fname(res, fld);
 			char	   *varname = psprintf("%s%s", varprefix, colname);
 			PgBenchValue *elems = NULL;
 			PgBenchValue arr_val;
@@ -1865,10 +1865,10 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 				elems = pg_malloc_array(PgBenchValue, ntuples);
 				for (int r = 0; r < ntuples; r++)
 				{
-					if (PQgetisnull(res, r, fld))
+					if (active_driver->get_is_null(res, r, fld))
 						setNullValue(&elems[r]);
 					else
-						parseResultCellValue(PQgetvalue(res, r, fld), &elems[r]);
+						parseResultCellValue(active_driver->get_value(res, r, fld), &elems[r]);
 				}
 			}
 
@@ -1903,15 +1903,15 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 	/* store results into variables */
 	for (fld = 0; fld < nfields; fld++)
 	{
-		char	   *colname = PQfname(res, fld);
-		char	   *varname = colname;
+		const char *colname = active_driver->fname(res, fld);
+		char	   *varname = (char *) colname;
 		bool		ok;
 
 		if (*varprefix != '\0')
 			varname = psprintf("%s%s", varprefix, colname);
 
 		/* store last row result */
-		if (PQgetisnull(res, ntuples - 1, fld))
+		if (active_driver->get_is_null(res, ntuples - 1, fld))
 		{
 			PgBenchValue nullval;
 
@@ -1929,7 +1929,7 @@ processGSetResult(CState *st, Command *command, PGresult *res, bool is_last, int
 		}
 		else
 		{
-			const char *valstr = PQgetvalue(res, ntuples - 1, fld);
+			const char *valstr = active_driver->get_value(res, ntuples - 1, fld);
 
 			ok = storeGSetColumnValue(&st->variables, context, varname, valstr);
 			if (ok && *varprefix != '\0' && varprefix[strlen(varprefix) - 1] != '_' &&
@@ -2013,18 +2013,18 @@ populateGSetMeta(CState *st, const char *prefix)
  * :prefix_nrows.
  */
 bool
-processGSetMetaResult(CState *st, Command *command, PGresult *res)
+processGSetMetaResult(CState *st, Command *command, PgBenchResult *res)
 {
 	const char *p = (command->meta_varprefix != NULL) ? command->meta_varprefix : "";
 	size_t		plen = strlen(p);
 	const char *sep = (plen > 0 && p[plen - 1] != '_') ? "_" : "";
-	int			ntuples = PQntuples(res);
+	int			ntuples = active_driver->ntuples(res);
 
 	if (command->meta == META_NONE && ntuples >= 1)
 	{
-		for (int fld = 0; fld < PQnfields(res); fld++)
+		for (int fld = 0; fld < active_driver->nfields(res); fld++)
 		{
-			char	   *colname = PQfname(res, fld);
+			const char *colname = active_driver->fname(res, fld);
 			char	   *varname;
 
 			if (!valid_variable_name(colname))
@@ -2037,7 +2037,7 @@ processGSetMetaResult(CState *st, Command *command, PGresult *res)
 				continue;
 			}
 
-			if (PQgetisnull(res, ntuples - 1, fld))
+			if (active_driver->get_is_null(res, ntuples - 1, fld))
 			{
 				PgBenchValue nullval;
 
@@ -2047,7 +2047,7 @@ processGSetMetaResult(CState *st, Command *command, PGresult *res)
 			else
 			{
 				(void) storeGSetColumnValue(&st->variables, "gset_meta", varname,
-											PQgetvalue(res, ntuples - 1, fld));
+											active_driver->get_value(res, ntuples - 1, fld));
 			}
 			pfree(varname);
 		}

@@ -1533,12 +1533,126 @@ handle_cmd_dataset_bind(CState *st, Command *cmd, pg_time_usec_t *now)
 }
 
 /*
+ * Parse table_spec ("table_name" or "table_name(col1, col2, ...)") into
+ * table_name and an optional array of column names.
+ */
+static void
+parseTableSpecColumns(PgBenchConn *con, const char *table_spec,
+					  char **table_name_out, char ***col_names_out, int *ncols_out)
+{
+	const char *lparen = strchr(table_spec, '(');
+
+	*col_names_out = NULL;
+	*ncols_out = 0;
+
+	if (lparen == NULL)
+	{
+		const char *p = table_spec;
+		const char *end;
+
+		while (*p && isspace((unsigned char) *p))
+			p++;
+		end = p + strlen(p);
+		while (end > p && isspace((unsigned char) end[-1]))
+			end--;
+		*table_name_out = pnstrdup(p, end - p);
+	}
+	else
+	{
+		const char *p = table_spec;
+		const char *end = lparen;
+		const char *rparen = strchr(lparen + 1, ')');
+		const char *cEnd = rparen ? rparen : (lparen + strlen(lparen));
+		int			cap = 8;
+		char	  **cols = pg_malloc0_array(char *, cap);
+		int			n = 0;
+
+		while (*p && isspace((unsigned char) *p))
+			p++;
+		while (end > p && isspace((unsigned char) end[-1]))
+			end--;
+		*table_name_out = pnstrdup(p, end - p);
+
+		p = lparen + 1;
+		while (p < cEnd)
+		{
+			const char *comma = memchr(p, ',', cEnd - p);
+			const char *tok_end = comma ? comma : cEnd;
+			const char *ts = p;
+			const char *te = tok_end;
+
+			while (ts < te && isspace((unsigned char) *ts))
+				ts++;
+			while (te > ts && isspace((unsigned char) te[-1]))
+				te--;
+			if (te > ts)
+			{
+				if (n >= cap)
+				{
+					cap *= 2;
+					cols = pg_realloc_array(cols, char *, cap);
+				}
+				cols[n++] = pnstrdup(ts, te - ts);
+			}
+			if (comma == NULL)
+				break;
+			p = comma + 1;
+		}
+		*col_names_out = cols;
+		*ncols_out = n;
+	}
+
+	/* If Spanner needs column names and none were specified in table_spec, probe LIMIT 0 */
+	if (*ncols_out == 0 && active_driver == &spanner_driver && con != NULL)
+	{
+		PQExpBufferData q;
+		PgBenchResult *res;
+
+		initPQExpBuffer(&q);
+		appendPQExpBuffer(&q, "SELECT * FROM %s LIMIT 0", *table_name_out);
+		res = active_driver->exec_sync(con, q.data);
+		termPQExpBuffer(&q);
+		if (res != NULL && active_driver->result_status(res) == PGBENCH_RES_TUPLES_OK)
+		{
+			int			nf = active_driver->nfields(res);
+
+			if (nf > 0)
+			{
+				char	  **cols = pg_malloc0_array(char *, nf);
+
+				for (int i = 0; i < nf; i++)
+				{
+					const char *fn = active_driver->fname(res, i);
+
+					cols[i] = pg_strdup(fn ? fn : "col");
+				}
+				*col_names_out = cols;
+				*ncols_out = nf;
+			}
+		}
+		active_driver->clear_result(res);
+	}
+}
+
+static void
+freeTableSpecColumns(char *table_name, char **col_names, int ncols)
+{
+	pg_free(table_name);
+	if (col_names != NULL)
+	{
+		for (int i = 0; i < ncols; i++)
+			pg_free(col_names[i]);
+		pg_free(col_names);
+	}
+}
+
+/*
  * Determine the number of columns targeted by table_spec for vector COPY.
  * If table_spec contains "(col1, col2, ...)", count commas + 1.
  * Otherwise, probe the table with SELECT * FROM <table> LIMIT 0.
  */
 static int
-detectTargetColumnCount(PGconn *con, const char *table_spec)
+detectTargetColumnCount(PgBenchConn *con, const char *table_spec)
 {
 	const char *lparen = strchr(table_spec, '(');
 
@@ -1556,32 +1670,35 @@ detectTargetColumnCount(PGconn *con, const char *table_spec)
 	else
 	{
 		PQExpBufferData q;
-		PGresult   *res;
+		PgBenchResult *res;
 		int			ncols = 2;
 
 		initPQExpBuffer(&q);
 		appendPQExpBuffer(&q, "SELECT * FROM %s LIMIT 0", table_spec);
-		res = PQexec(con, q.data);
+		res = active_driver->exec_sync(con, q.data);
 		termPQExpBuffer(&q);
-		if (PQresultStatus(res) == PGRES_TUPLES_OK)
-			ncols = PQnfields(res);
-		PQclear(res);
+		if (active_driver->result_status(res) == PGBENCH_RES_TUPLES_OK)
+			ncols = active_driver->nfields(res);
+		active_driver->clear_result(res);
 		return ncols;
 	}
 }
 
 /*
- * Stream the slice [start_row, end_row) of a dataset into PostgreSQL via
- * PQputCopyData() + PQputCopyEnd().
+ * Stream the slice [start_row, end_row) of a dataset into the active database
+ * driver via active_driver->copy_begin / copy_put_data / copy_put_row / copy_end.
  */
 bool
-copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
+copyDatasetSlice(PgBenchConn *con, PgBenchDataset *ds, const char *table_spec,
 				 int client_id, int num_clients)
 {
 	int64		start_row;
 	int64		end_row;
 	PQExpBufferData copy_sql;
-	PGresult   *res;
+	PgBenchCopyStream *stream;
+	char	   *table_name = NULL;
+	char	  **col_names = NULL;
+	int			ncols = 0;
 
 	if (ds == NULL || con == NULL)
 		return false;
@@ -1626,22 +1743,25 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 		appendPQExpBuffer(&copy_sql, "COPY %s FROM STDIN", table_spec);
 	}
 
+	parseTableSpecColumns(con, table_spec, &table_name, &col_names, &ncols);
+
 	if (ds->format == DATASET_FVECS || ds->format == DATASET_BVECS ||
 		ds->format == DATASET_IVECS)
 	{
 		int			target_cols = detectTargetColumnCount(con, table_spec);
 		PQExpBufferData chunk;
 
-		res = PQexec(con, copy_sql.data);
+		stream = active_driver->copy_begin(con, table_name, ncols,
+										   (const char *const *) col_names,
+										   copy_sql.data);
 		termPQExpBuffer(&copy_sql);
-		if (PQresultStatus(res) != PGRES_COPY_IN)
+		freeTableSpecColumns(table_name, col_names, ncols);
+		if (stream == NULL)
 		{
 			pg_log_error("COPY failed for dataset \"%s\": %s",
-						 ds->name, PQerrorMessage(con));
-			PQclear(res);
+						 ds->name, active_driver->error_message(con));
 			return false;
 		}
-		PQclear(res);
 
 		initPQExpBuffer(&chunk);
 		for (int64 r = start_row; r < end_row; r++)
@@ -1652,9 +1772,7 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 			if (!datasetGetRow(ds, r, -1, &v))
 			{
 				termPQExpBuffer(&chunk);
-				(void) PQputCopyEnd(con, "dataset read error");
-				res = PQgetResult(con);
-				PQclear(res);
+				(void) active_driver->copy_end(stream, "dataset read error");
 				return false;
 			}
 			formatted = formatValue(&v);
@@ -1675,11 +1793,12 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 
 			if (chunk.len >= COPY_CHUNK_BYTES)
 			{
-				if (PQputCopyData(con, chunk.data, (int) chunk.len) != 1)
+				if (!active_driver->copy_put_data(stream, chunk.data, (int) chunk.len))
 				{
-					pg_log_error("PQputCopyData failed for dataset \"%s\": %s",
-								 ds->name, PQerrorMessage(con));
+					pg_log_error("copy_put_data failed for dataset \"%s\": %s",
+								 ds->name, active_driver->error_message(con));
 					termPQExpBuffer(&chunk);
+					(void) active_driver->copy_end(stream, "copy_put_data error");
 					return false;
 				}
 				resetPQExpBuffer(&chunk);
@@ -1688,15 +1807,57 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 
 		if (chunk.len > 0)
 		{
-			if (PQputCopyData(con, chunk.data, (int) chunk.len) != 1)
+			if (!active_driver->copy_put_data(stream, chunk.data, (int) chunk.len))
 			{
-				pg_log_error("PQputCopyData failed for dataset \"%s\": %s",
-							 ds->name, PQerrorMessage(con));
+				pg_log_error("copy_put_data failed for dataset \"%s\": %s",
+							 ds->name, active_driver->error_message(con));
 				termPQExpBuffer(&chunk);
+				(void) active_driver->copy_end(stream, "copy_put_data error");
 				return false;
 			}
 		}
 		termPQExpBuffer(&chunk);
+	}
+	else if (ds->format == DATASET_CSV && active_driver->caps.supports_typed_copy)
+	{
+		int			row_cols = (ncols > 0) ? ncols : (ds->dim > 0 ? ds->dim : 1);
+		PgBenchValue *vals;
+
+		stream = active_driver->copy_begin(con, table_name, ncols,
+										   (const char *const *) col_names,
+										   copy_sql.data);
+		termPQExpBuffer(&copy_sql);
+		freeTableSpecColumns(table_name, col_names, ncols);
+		if (stream == NULL)
+		{
+			pg_log_error("COPY failed for dataset \"%s\": %s",
+						 ds->name, active_driver->error_message(con));
+			return false;
+		}
+
+		vals = pg_malloc0_array(PgBenchValue, row_cols);
+		for (int64 r = start_row; r < end_row; r++)
+		{
+			bool		row_ok = true;
+
+			for (int c = 0; c < row_cols; c++)
+			{
+				if (!datasetGetRow(ds, r, c, &vals[c]))
+					setNullValue(&vals[c]);
+			}
+			row_ok = active_driver->copy_put_row(stream, row_cols, vals);
+			for (int c = 0; c < row_cols; c++)
+				freeValue(&vals[c]);
+			if (!row_ok)
+			{
+				pg_free(vals);
+				pg_log_error("copy_put_row failed for dataset \"%s\": %s",
+							 ds->name, active_driver->error_message(con));
+				(void) active_driver->copy_end(stream, "copy_put_row error");
+				return false;
+			}
+		}
+		pg_free(vals);
 	}
 	else
 	{
@@ -1704,52 +1865,40 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 		uint64		end_byte = ds->row_offsets[end_row];
 		uint64		offset = start_byte;
 
-		res = PQexec(con, copy_sql.data);
+		stream = active_driver->copy_begin(con, table_name, ncols,
+										   (const char *const *) col_names,
+										   copy_sql.data);
 		termPQExpBuffer(&copy_sql);
-		if (PQresultStatus(res) != PGRES_COPY_IN)
+		freeTableSpecColumns(table_name, col_names, ncols);
+		if (stream == NULL)
 		{
 			pg_log_error("COPY failed for dataset \"%s\": %s",
-						 ds->name, PQerrorMessage(con));
-			PQclear(res);
+						 ds->name, active_driver->error_message(con));
 			return false;
 		}
-		PQclear(res);
 
 		while (offset < end_byte)
 		{
 			uint64		rem = end_byte - offset;
 			int			chunk_len = (rem > COPY_CHUNK_BYTES) ? COPY_CHUNK_BYTES : (int) rem;
 
-			if (PQputCopyData(con, (const char *) (ds->raw_data + offset), chunk_len) != 1)
+			if (!active_driver->copy_put_data(stream, (const char *) (ds->raw_data + offset), chunk_len))
 			{
-				pg_log_error("PQputCopyData failed for dataset \"%s\": %s",
-							 ds->name, PQerrorMessage(con));
+				pg_log_error("copy_put_data failed for dataset \"%s\": %s",
+							 ds->name, active_driver->error_message(con));
+				(void) active_driver->copy_end(stream, "copy_put_data error");
 				return false;
 			}
 			offset += (uint64) chunk_len;
 		}
 	}
 
-	if (PQputCopyEnd(con, NULL) != 1)
-	{
-		pg_log_error("PQputCopyEnd failed for dataset \"%s\": %s",
-					 ds->name, PQerrorMessage(con));
-		return false;
-	}
-
-	res = PQgetResult(con);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	if (!active_driver->copy_end(stream, NULL))
 	{
 		pg_log_error("COPY end failed for dataset \"%s\": %s",
-					 ds->name, PQerrorMessage(con));
-		PQclear(res);
+					 ds->name, active_driver->error_message(con));
 		return false;
 	}
-	PQclear(res);
-
-	/* Drain any remaining NULL result from PQgetResult */
-	while ((res = PQgetResult(con)) != NULL)
-		PQclear(res);
 
 	return true;
 }
@@ -1757,7 +1906,7 @@ copyDatasetSlice(PGconn *con, PgBenchDataset *ds, const char *table_spec,
 typedef struct CopyDatasetWorker
 {
 	THREAD_T	thread;
-	PGconn	   *con;
+	PgBenchConn *con;
 	PgBenchDataset *ds;
 	const char *table_spec;
 	int			worker_id;
@@ -1779,7 +1928,7 @@ copyDatasetWorkerRun(void *arg)
  * Execute all registered --copy-dataset specs using up to nthreads parallel workers.
  */
 void
-runRegisteredCopyDatasets(PGconn *con)
+runRegisteredCopyDatasets(PgBenchConn *con)
 {
 	for (int i = 0; i < num_copy_dataset_specs; i++)
 	{
@@ -1837,7 +1986,7 @@ runRegisteredCopyDatasets(PGconn *con)
 			for (int w = 1; w < num_workers; w++)
 			{
 				THREAD_JOIN(workers[w].thread);
-				PQfinish(workers[w].con);
+				active_driver->finish(workers[w].con);
 				if (!workers[w].ok)
 					all_ok = false;
 			}

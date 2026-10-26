@@ -47,8 +47,8 @@ int	max_concurrent_sessions = 0;
 int	active_sessions_count = 0;
 static int	aborted_clients_count = 0;
 static volatile int script_stats_lock = 0;
-static char *resolved_hostaddr = NULL;
-static char *saved_password = NULL;
+char *resolved_hostaddr = NULL;
+char *saved_password = NULL;
 
 static inline void
 lockScriptStats(void)
@@ -213,74 +213,13 @@ resolveHostAddrOnce(void)
 	}
 }
 
-/* set up a connection to the backend */
-PGconn *
-doConnect(void)
-{
-	PGconn	   *conn;
-	bool		new_pass;
-
-	/*
-	 * Start the connection.  Loop until we have a password if requested by
-	 * backend.
-	 */
-	do
-	{
 #define PARAMS_ARRAY_SIZE	8
 
-		const char *keywords[PARAMS_ARRAY_SIZE];
-		const char *values[PARAMS_ARRAY_SIZE];
-		int			k = 0;
-
-		keywords[k] = "host";
-		values[k++] = pghost;
-		if (resolved_hostaddr != NULL)
-		{
-			keywords[k] = "hostaddr";
-			values[k++] = resolved_hostaddr;
-		}
-		keywords[k] = "port";
-		values[k++] = pgport;
-		keywords[k] = "user";
-		values[k++] = username;
-		keywords[k] = "password";
-		values[k++] = saved_password;
-		keywords[k] = "dbname";
-		values[k++] = dbName;
-		keywords[k] = "fallback_application_name";
-		values[k++] = progname;
-		keywords[k] = NULL;
-		values[k] = NULL;
-
-		new_pass = false;
-
-		conn = PQconnectdbParams(keywords, values, true);
-
-		if (!conn)
-		{
-			pg_log_error("connection to database \"%s\" failed", dbName);
-			return NULL;
-		}
-
-		if (PQstatus(conn) == CONNECTION_BAD &&
-			PQconnectionNeedsPassword(conn) &&
-			!saved_password)
-		{
-			PQfinish(conn);
-			saved_password = simple_prompt("Password: ", false);
-			new_pass = true;
-		}
-	} while (new_pass);
-
-	/* check to see that the backend connection was successfully made */
-	if (PQstatus(conn) == CONNECTION_BAD)
-	{
-		pg_log_error("%s", PQerrorMessage(conn));
-		PQfinish(conn);
-		return NULL;
-	}
-
-	return conn;
+/* set up a connection to the backend */
+PgBenchConn *
+doConnect(void)
+{
+	return active_driver->connect_sync(pghost, pgport, username, dbName);
 }
 
 /*
@@ -357,70 +296,36 @@ doConnectCustom(const char *conninfo)
 /*
  * Initiate a non-blocking connection to the backend for \session_connect.
  */
-PGconn *
+PgBenchConn *
 doConnectAsync(const char *db_override, const char *user_override)
 {
-	PGconn	   *conn;
-	const char *keywords[PARAMS_ARRAY_SIZE];
-	const char *values[PARAMS_ARRAY_SIZE];
-	int			k = 0;
 	const char *eff_db = (db_override != NULL && *db_override != '\0') ?
 		db_override : dbName;
 	const char *eff_user = (user_override != NULL && *user_override != '\0') ?
 		user_override : username;
 
-	keywords[k] = "host";
-	values[k++] = pghost;
-	if (resolved_hostaddr != NULL)
-	{
-		keywords[k] = "hostaddr";
-		values[k++] = resolved_hostaddr;
-	}
-	keywords[k] = "port";
-	values[k++] = pgport;
-	keywords[k] = "user";
-	values[k++] = eff_user;
-	keywords[k] = "password";
-	values[k++] = saved_password;
-	keywords[k] = "dbname";
-	values[k++] = eff_db;
-	keywords[k] = "fallback_application_name";
-	values[k++] = progname;
-	keywords[k] = NULL;
-	values[k] = NULL;
-
-	conn = PQconnectStartParams(keywords, values, true);
-	if (!conn)
-	{
-		pg_log_error("connection to database \"%s\" failed", eff_db);
-		return NULL;
-	}
-
-	if (PQstatus(conn) == CONNECTION_BAD)
-	{
-		pg_log_error("%s", PQerrorMessage(conn));
-		PQfinish(conn);
-		return NULL;
-	}
-
-	return conn;
+	return active_driver->connect_start(pghost, pgport, eff_user, eff_db);
 }
 
 static void
 getQueryParams(Variables *variables, const Command *command,
-			   const char **params)
+			   const char **params, const Variable **param_vars)
 {
 	int			i;
 
 	for (i = 0; i < command->argc - 1; i++)
+	{
 		params[i] = getVariable(variables, command->argv[i + 1]);
+		if (param_vars != NULL)
+			param_vars[i] = lookupVariable(variables, command->argv[i + 1]);
+	}
 }
 
 /* Send a SQL command, using the chosen querymode */
 static bool
 sendCommand(CState *st, Command *command)
 {
-	int			r;
+	bool		r;
 
 	if (querymode == QUERY_SIMPLE)
 	{
@@ -430,35 +335,38 @@ sendCommand(CState *st, Command *command)
 		sql = assignVariables(&st->variables, sql);
 
 		pg_log_debug("client %d sending %s", st->id, sql);
-		r = PQsendQuery(st->con, sql);
+		r = active_driver->send_query(st->con, sql);
 		pg_free(sql);
 	}
 	else if (querymode == QUERY_EXTENDED)
 	{
 		const char *sql = command->argv[0];
 		const char *params[MAX_ARGS];
+		const Variable *param_vars[MAX_ARGS];
 
-		getQueryParams(&st->variables, command, params);
+		getQueryParams(&st->variables, command, params, param_vars);
 
 		pg_log_debug("client %d sending %s", st->id, sql);
-		r = PQsendQueryParams(st->con, sql, command->argc - 1,
-							  NULL, params, NULL, NULL, 0);
+		r = active_driver->send_query_params(st->con, sql, command->argc - 1,
+											 params, param_vars);
 	}
 	else if (querymode == QUERY_PREPARED)
 	{
 		const char *params[MAX_ARGS];
+		const Variable *param_vars[MAX_ARGS];
 
 		prepareCommand(st, st->command);
-		getQueryParams(&st->variables, command, params);
+		getQueryParams(&st->variables, command, params, param_vars);
 
 		pg_log_debug("client %d sending %s", st->id, command->prepname);
-		r = PQsendQueryPrepared(st->con, command->prepname, command->argc - 1,
-								params, NULL, NULL, 0);
+		r = active_driver->send_query_prepared(st->con, command->prepname,
+											   command->argc - 1,
+											   params, param_vars);
 	}
 	else						/* unknown sql mode */
-		r = 0;
+		r = false;
 
-	if (r == 0)
+	if (!r)
 	{
 		pg_log_debug("client %d could not send %s", st->id, command->argv[0]);
 		return false;
@@ -473,26 +381,26 @@ sendCommand(CState *st, Command *command)
 static void
 discardAvailableResults(CState *st)
 {
-	PGresult   *res = NULL;
+	PgBenchResult *res = NULL;
 
 	for (;;)
 	{
-		res = PQgetResult(st->con);
+		res = active_driver->get_result(st->con);
 
 		/*
-		 * Read and discard results until PQgetResult() returns NULL (no more
+		 * Read and discard results until get_result() returns NULL (no more
 		 * results) or a connection failure is detected. If the pipeline
-		 * status is PQ_PIPELINE_ABORTED, more results may still be available
-		 * even after PQgetResult() returns NULL, so continue reading in that
+		 * status is PGBENCH_PIPE_ABORTED, more results may still be available
+		 * even after get_result() returns NULL, so continue reading in that
 		 * case.
 		 */
-		if ((res == NULL && PQpipelineStatus(st->con) != PQ_PIPELINE_ABORTED) ||
-			PQstatus(st->con) == CONNECTION_BAD)
+		if ((res == NULL && active_driver->pipeline_status(st->con) != PGBENCH_PIPE_ABORTED) ||
+			active_driver->status(st->con) == PGBENCH_CONN_BAD)
 			break;
 
-		PQclear(res);
+		active_driver->clear_result(res);
 	}
-	PQclear(res);
+	active_driver->clear_result(res);
 }
 
 /*
@@ -502,7 +410,7 @@ static EStatus
 getSQLErrorStatus(CState *st, const char *sqlState)
 {
 	discardAvailableResults(st);
-	if (PQstatus(st->con) == CONNECTION_BAD)
+	if (active_driver->status(st->con) == PGBENCH_CONN_BAD)
 		return ESTATUS_CONN_ERROR;
 
 	if (sqlState != NULL)
@@ -678,8 +586,8 @@ checkCaughtError(CState *st, const char *sqlstate)
 static bool
 readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 {
-	PGresult   *res;
-	PGresult   *next_res;
+	PgBenchResult *res;
+	PgBenchResult *next_res;
 	int			qrynum = 0;
 
 	/*
@@ -692,24 +600,25 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 
 	st->last_sqlstate[0] = '\0';
 
-	res = PQgetResult(st->con);
+	res = active_driver->get_result(st->con);
 
 	while (res != NULL)
 	{
 		bool		is_last;
 
 		/* peek at the next result to know whether the current is last */
-		next_res = PQgetResult(st->con);
+		next_res = active_driver->get_result(st->con);
 		is_last = (next_res == NULL);
 
-		switch (PQresultStatus(res))
+		switch (active_driver->result_status(res))
 		{
-			case PGRES_COMMAND_OK:	/* non-SELECT commands */
-			case PGRES_EMPTY_QUERY: /* may be used for testing no-op overhead */
-				if (PQresultStatus(res) == PGRES_COMMAND_OK)
+			case PGBENCH_RES_COMMAND_OK:	/* non-SELECT commands */
+			case PGBENCH_RES_EMPTY_QUERY:	/* may be used for testing no-op overhead */
+				if (active_driver->result_status(res) == PGBENCH_RES_COMMAND_OK &&
+					active_driver == &postgres_driver)
 				{
-					const char *cmdtuples = PQcmdTuples(res);
-					const char *cmdstatus = PQcmdStatus(res);
+					const char *cmdtuples = PQcmdTuples((PGresult *) res);
+					const char *cmdstatus = PQcmdStatus((PGresult *) res);
 
 					st->last_nrows = (cmdtuples != NULL && *cmdtuples != '\0') ?
 						strtoi64(cmdtuples, NULL, 10) : 0;
@@ -721,7 +630,7 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 				}
 				else
 				{
-					st->last_nrows = 0;
+					st->last_nrows = active_driver->ntuples(res);
 					st->last_status = "OK";
 				}
 				strlcpy(st->last_sqlstate, "00000", sizeof(st->last_sqlstate));
@@ -749,8 +658,8 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 				}
 				break;
 
-			case PGRES_TUPLES_OK:
-				st->last_nrows = PQntuples(res);
+			case PGBENCH_RES_TUPLES_OK:
+				st->last_nrows = active_driver->ntuples(res);
 				st->last_status = "OK";
 				strlcpy(st->last_sqlstate, "00000", sizeof(st->last_sqlstate));
 
@@ -769,36 +678,33 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 											   res))
 						goto error;
 				}
-				/* otherwise the result is simply thrown away by PQclear below */
+				/* otherwise the result is simply thrown away by clear_result below */
 				break;
 
-			case PGRES_PIPELINE_SYNC:
+			case PGBENCH_RES_PIPELINE_SYNC:
 				pg_log_debug("client %d pipeline ending, ongoing syncs: %d",
 							 st->id, st->num_syncs);
 				st->num_syncs--;
-				if (st->num_syncs == 0 && PQexitPipelineMode(st->con) != 1)
+				if (st->num_syncs == 0 && !active_driver->exit_pipeline_mode(st->con))
 					pg_log_error("client %d failed to exit pipeline mode: %s", st->id,
-								 PQresultErrorMessage(res));
+								 active_driver->result_error_message(res, st->con));
 				break;
 
-			case PGRES_COPY_IN:
-			case PGRES_COPY_OUT:
-			case PGRES_COPY_BOTH:
+			case PGBENCH_RES_COPY_IN:
+			case PGBENCH_RES_COPY_OUT:
 				pg_log_error("COPY is not supported in pgbench, aborting");
 
 				/*
-				 * We need to exit the copy state.  Otherwise, PQgetResult()
-				 * will always return an empty PGresult as an effect of
-				 * getCopyResult(), leading to an infinite loop in the error
-				 * cleanup done below.
+				 * We need to exit the copy state on libpq connections.
 				 */
-				PQendcopy(st->con);
+				if (active_driver == &postgres_driver)
+					PQendcopy((PGconn *) st->con);
 				goto error;
 
-			case PGRES_NONFATAL_ERROR:
-			case PGRES_FATAL_ERROR:
+			case PGBENCH_RES_NONFATAL_ERROR:
+			case PGBENCH_RES_FATAL_ERROR:
 				{
-					const char *sqlstate = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+					const char *sqlstate = active_driver->result_error_field(res, PG_DIAG_SQLSTATE);
 
 					st->last_status = "ERROR";
 					st->last_nrows = 0;
@@ -810,13 +716,13 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 						checkCaughtError(st, st->last_sqlstate))
 					{
 						if (verbose_errors)
-							commandError(st, PQresultErrorMessage(res));
+							commandError(st, active_driver->result_error_message(res, st->con));
 						goto error;
 					}
 					if (canRetryError(st->estatus) || canContinueOnError(st->estatus))
 					{
 						if (verbose_errors)
-							commandError(st, PQresultErrorMessage(res));
+							commandError(st, active_driver->result_error_message(res, st->con));
 						goto error;
 					}
 				}
@@ -826,11 +732,11 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 				/* anything else is unexpected */
 				pg_log_error("client %d script %d aborted in command %d query %d: %s",
 							 st->id, st->use_file, st->command, qrynum,
-							 PQresultErrorMessage(res));
+							 active_driver->result_error_message(res, st->con));
 				goto error;
 		}
 
-		PQclear(res);
+		active_driver->clear_result(res);
 		qrynum++;
 		res = next_res;
 	}
@@ -844,8 +750,8 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 	return true;
 
 error:
-	PQclear(res);
-	PQclear(next_res);
+	active_driver->clear_result(res);
+	active_driver->clear_result(next_res);
 	discardAvailableResults(st);
 
 	return false;
@@ -906,11 +812,11 @@ discardUntilSync(CState *st)
 	bool		received_sync = false;
 
 	/*
-	 * Send a Sync message to ensure at least one PGRES_PIPELINE_SYNC is
+	 * Send a Sync message to ensure at least one PGBENCH_RES_PIPELINE_SYNC is
 	 * received and to avoid an infinite loop, since all earlier ones may have
 	 * already been received.
 	 */
-	if (!PQpipelineSync(st->con))
+	if (!active_driver->pipeline_sync(st->con))
 	{
 		pg_log_error("client %d aborted: failed to send a pipeline sync",
 					 st->id);
@@ -919,26 +825,26 @@ discardUntilSync(CState *st)
 
 	/*
 	 * Continue reading results until the last sync point, i.e., until
-	 * reaching null just after PGRES_PIPELINE_SYNC.
+	 * reaching null just after PGBENCH_RES_PIPELINE_SYNC.
 	 */
 	for (;;)
 	{
-		PGresult   *res = PQgetResult(st->con);
+		PgBenchResult *res = active_driver->get_result(st->con);
 
-		if (PQstatus(st->con) == CONNECTION_BAD)
+		if (active_driver->status(st->con) == PGBENCH_CONN_BAD)
 		{
 			pg_log_error("client %d aborted while rolling back the transaction after an error; perhaps the backend died while processing",
 						 st->id);
-			PQclear(res);
+			active_driver->clear_result(res);
 			return 0;
 		}
 
-		if (PQresultStatus(res) == PGRES_PIPELINE_SYNC)
+		if (res != NULL && active_driver->result_status(res) == PGBENCH_RES_PIPELINE_SYNC)
 			received_sync = true;
 		else if (received_sync && res == NULL)
 		{
 			/*
-			 * Reset ongoing sync count to 0 since all PGRES_PIPELINE_SYNC
+			 * Reset ongoing sync count to 0 since all PGBENCH_RES_PIPELINE_SYNC
 			 * results have been discarded.
 			 */
 			st->num_syncs = 0;
@@ -947,17 +853,17 @@ discardUntilSync(CState *st)
 		else
 		{
 			/*
-			 * If a PGRES_PIPELINE_SYNC is followed by something other than
-			 * PGRES_PIPELINE_SYNC or NULL, another PGRES_PIPELINE_SYNC will
+			 * If a PGBENCH_RES_PIPELINE_SYNC is followed by something other than
+			 * PGBENCH_RES_PIPELINE_SYNC or NULL, another PGBENCH_RES_PIPELINE_SYNC will
 			 * appear later. Reset received_sync to false to wait for it.
 			 */
 			received_sync = false;
 		}
-		PQclear(res);
+		active_driver->clear_result(res);
 	}
 
 	/* exit pipeline */
-	if (PQexitPipelineMode(st->con) != 1)
+	if (!active_driver->exit_pipeline_mode(st->con))
 	{
 		pg_log_error("client %d aborted: failed to exit pipeline mode for rolling back the failed transaction",
 					 st->id);
@@ -971,31 +877,31 @@ discardUntilSync(CState *st)
  * checking if we are in a (failed) transaction block.
  */
 static TStatus
-getTransactionStatus(PGconn *con)
+getTransactionStatus(PgBenchConn *con)
 {
-	PGTransactionStatusType tx_status;
+	PgBenchTxStatus tx_status;
 
-	tx_status = PQtransactionStatus(con);
+	tx_status = active_driver->tx_status(con);
 	switch (tx_status)
 	{
-		case PQTRANS_IDLE:
+		case PGBENCH_TX_IDLE:
 			return TSTATUS_IDLE;
-		case PQTRANS_INTRANS:
-		case PQTRANS_INERROR:
+		case PGBENCH_TX_INTRANS:
+		case PGBENCH_TX_INERROR:
 			return TSTATUS_IN_BLOCK;
-		case PQTRANS_UNKNOWN:
-			/* PQTRANS_UNKNOWN is expected given a broken connection */
-			if (PQstatus(con) == CONNECTION_BAD)
+		case PGBENCH_TX_UNKNOWN:
+			/* PGBENCH_TX_UNKNOWN is expected given a broken connection */
+			if (active_driver->status(con) == PGBENCH_CONN_BAD)
 				return TSTATUS_CONN_ERROR;
 			pg_fallthrough;
-		case PQTRANS_ACTIVE:
+		case PGBENCH_TX_ACTIVE:
 		default:
 
 			/*
 			 * We cannot find out whether we are in a transaction block or
 			 * not. Internal error which should never occur.
 			 */
-			pg_log_error("unexpected transaction status %d", tx_status);
+			pg_log_error("unexpected transaction status %d", (int) tx_status);
 			return TSTATUS_OTHER_ERROR;
 	}
 
@@ -1449,7 +1355,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 */
 				if (command == NULL)
 				{
-					if (st->con == NULL || PQpipelineStatus(st->con) == PQ_PIPELINE_OFF)
+					if (st->con == NULL || active_driver->pipeline_status(st->con) == PGBENCH_PIPE_OFF)
 						st->state = CSTATE_END_TX;
 					else
 					{
@@ -1499,7 +1405,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					 */
 					if (st->try_depth > 0 &&
 						st->try_stack[st->try_depth - 1].in_catch &&
-						PQpipelineStatus(st->con) == PQ_PIPELINE_OFF &&
+						active_driver->pipeline_status(st->con) == PGBENCH_PIPE_OFF &&
 						getTransactionStatus(st->con) == TSTATUS_IDLE &&
 						isStandaloneRollback(command->argv[0]))
 					{
@@ -1517,7 +1423,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					}
 
 					/* disallow \aset, \gset, and \gset_meta in pipeline mode */
-					if (PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+					if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 					{
 						if (command->meta == META_GSET)
 						{
@@ -1547,7 +1453,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					else
 					{
 						/* Wait for results, unless in pipeline mode */
-						if (PQpipelineStatus(st->con) == PQ_PIPELINE_OFF)
+						if (active_driver->pipeline_status(st->con) == PGBENCH_PIPE_OFF)
 							st->state = CSTATE_WAIT_RESULT;
 						else
 							st->state = CSTATE_END_COMMAND;
@@ -1609,14 +1515,14 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 				 * individual pipelined query, which has a measurable
 				 * performance impact.
 				 */
-				if (PQisBusy(st->con) && !PQconsumeInput(st->con))
+				if (active_driver->is_busy(st->con) && !active_driver->consume_input(st->con))
 				{
 					/* there's something wrong */
 					commandFailed(st, "SQL", "perhaps the backend died while processing");
 					st->state = CSTATE_ABORTED;
 					break;
 				}
-				if (PQisBusy(st->con))
+				if (active_driver->is_busy(st->con))
 					return;		/* don't have the whole result yet */
 
 				/* store or discard the query results */
@@ -1629,7 +1535,7 @@ advanceConnectionState(TState *thread, CState *st, StatsData *agg)
 					 * pipeline mode: continue reading results until an
 					 * end-of-pipeline response.
 					 */
-					if (PQpipelineStatus(st->con) != PQ_PIPELINE_ON)
+					if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_ON)
 						st->state = CSTATE_END_COMMAND;
 				}
 				else if (st->error_caught ||
@@ -1747,20 +1653,20 @@ session_slot_acquired:
 						st->state = CSTATE_ABORTED;
 						break;
 					}
-					st->connect_poll_mode = (int) PGRES_POLLING_WRITING;
+					st->connect_poll_mode = PGBENCH_CONN_POLLING_WRITING;
 					st->state = CSTATE_CONNECTING;
 					break;
 				}
 
 				/*
-				 * Drive non-blocking libpq connection establishment via
-				 * PQconnectPoll() (\session_connect).
+				 * Drive non-blocking connection establishment via
+				 * active_driver->connect_poll() (\session_connect).
 				 */
 			case CSTATE_CONNECTING:
 				{
-					PostgresPollingStatusType pstatus = PQconnectPoll(st->con);
+					PgBenchConnStatus pstatus = active_driver->connect_poll(st->con);
 
-					if (pstatus == PGRES_POLLING_OK)
+					if (pstatus == PGBENCH_CONN_POLLING_OK)
 					{
 						now = pg_time_now();
 						if (st->session_conn_start > 0)
@@ -1771,16 +1677,16 @@ session_slot_acquired:
 						st->state = CSTATE_END_COMMAND;
 						break;
 					}
-					else if (pstatus == PGRES_POLLING_READING ||
-							 pstatus == PGRES_POLLING_WRITING)
+					else if (pstatus == PGBENCH_CONN_POLLING_READING ||
+							 pstatus == PGBENCH_CONN_POLLING_WRITING)
 					{
-						st->connect_poll_mode = (int) pstatus;
+						st->connect_poll_mode = pstatus;
 						return;
 					}
 					else
 					{
 						pg_log_error("client %d asynchronous connection failed: %s",
-									 st->id, PQerrorMessage(st->con));
+									 st->id, active_driver->error_message(st->con));
 						finishCon(st);
 						st->estatus = ESTATUS_CONN_ERROR;
 						st->state = CSTATE_ABORTED;
@@ -1820,7 +1726,7 @@ session_slot_acquired:
 				 */
 				if (st->expect_error &&
 					((command->type == SQL_COMMAND &&
-					  (st->con == NULL || PQpipelineStatus(st->con) == PQ_PIPELINE_OFF)) ||
+					  (st->con == NULL || active_driver->pipeline_status(st->con) == PGBENCH_PIPE_OFF)) ||
 					 (command->type == META_COMMAND &&
 					  (command->meta == META_ENDPIPELINE ||
 					   command->meta == META_SYNCPIPELINE))))
@@ -1885,7 +1791,7 @@ session_slot_acquired:
 					}
 
 					/* Read and discard until a sync point in pipeline mode */
-					if (PQpipelineStatus(st->con) != PQ_PIPELINE_OFF)
+					if (active_driver->pipeline_status(st->con) != PGBENCH_PIPE_OFF)
 					{
 						if (!discardUntilSync(st))
 						{
@@ -1904,7 +1810,7 @@ session_slot_acquired:
 						st->last_status = "ROLLBACK";
 
 						/* Try to rollback a (failed) transaction block. */
-						if (!PQsendQuery(st->con, "ROLLBACK"))
+						if (!active_driver->send_query(st->con, "ROLLBACK"))
 						{
 							pg_log_error("client %d aborted: failed to send sql command for rolling back the failed transaction",
 										 st->id);
@@ -1943,30 +1849,30 @@ session_slot_acquired:
 				 */
 			case CSTATE_WAIT_ROLLBACK_RESULT:
 				{
-					PGresult   *res;
+					PgBenchResult *res;
 
 					pg_log_debug("client %d receiving", st->id);
-					if (!PQconsumeInput(st->con))
+					if (!active_driver->consume_input(st->con))
 					{
 						pg_log_error("client %d aborted while rolling back the transaction after an error; perhaps the backend died while processing",
 									 st->id);
 						st->state = CSTATE_ABORTED;
 						break;
 					}
-					if (PQisBusy(st->con))
+					if (active_driver->is_busy(st->con))
 						return; /* don't have the whole result yet */
 
 					/*
 					 * Read and discard the query result;
 					 */
-					res = PQgetResult(st->con);
-					switch (PQresultStatus(res))
+					res = active_driver->get_result(st->con);
+					switch (active_driver->result_status(res))
 					{
-						case PGRES_COMMAND_OK:
+						case PGBENCH_RES_COMMAND_OK:
 							/* OK */
-							PQclear(res);
+							active_driver->clear_result(res);
 							/* null must be returned */
-							res = PQgetResult(st->con);
+							res = active_driver->get_result(st->con);
 							Assert(res == NULL);
 
 							if (st->error_caught)
@@ -1983,8 +1889,8 @@ session_slot_acquired:
 							break;
 						default:
 							pg_log_error("client %d aborted while rolling back the transaction after an error; %s",
-										 st->id, PQerrorMessage(st->con));
-							PQclear(res);
+										 st->id, active_driver->error_message(st->con));
+							active_driver->clear_result(res);
 							st->state = CSTATE_ABORTED;
 							break;
 					}
@@ -2550,33 +2456,42 @@ printProgressReport(TState *threads, int64 test_start, pg_time_usec_t now,
 
 /* print version banner */
 void
-printVersion(PGconn *con)
+printVersion(PgBenchConn *con)
 {
-	int			server_ver = PQserverVersion(con);
-	int			client_ver = PG_VERSION_NUM;
-
-	if (server_ver != client_ver)
+	if (active_driver != &postgres_driver)
 	{
-		const char *server_version;
-		char		sverbuf[32];
-
-		/* Try to get full text form, might include "devel" etc */
-		server_version = PQparameterStatus(con, "server_version");
-		/* Otherwise fall back on server_ver */
-		if (!server_version)
-		{
-			formatPGVersionNumber(server_ver, true,
-								  sverbuf, sizeof(sverbuf));
-			server_version = sverbuf;
-		}
-
-		printf(_("%s (%s, server %s)\n"),
-			   "pgbench", PG_VERSION, server_version);
+		printf("%s (%s, driver %s)\n", "pgbench", PG_VERSION, active_driver->name);
+		fflush(stdout);
+		return;
 	}
-	/* For version match, only print pgbench version */
-	else
-		printf("%s (%s)\n", "pgbench", PG_VERSION);
-	fflush(stdout);
+
+	{
+		int			server_ver = PQserverVersion((const PGconn *) con);
+		int			client_ver = PG_VERSION_NUM;
+
+		if (server_ver != client_ver)
+		{
+			const char *server_version;
+			char		sverbuf[32];
+
+			/* Try to get full text form, might include "devel" etc */
+			server_version = PQparameterStatus((const PGconn *) con, "server_version");
+			/* Otherwise fall back on server_ver */
+			if (!server_version)
+			{
+				formatPGVersionNumber(server_ver, true,
+									  sverbuf, sizeof(sverbuf));
+				server_version = sverbuf;
+			}
+
+			printf(_("%s (%s, server %s)\n"),
+				   "pgbench", PG_VERSION, server_version);
+		}
+		/* For version match, only print pgbench version */
+		else
+			printf("%s (%s)\n", "pgbench", PG_VERSION);
+		fflush(stdout);
+	}
 }
 
 /*
@@ -3836,7 +3751,7 @@ threadRun(void *arg)
 			}
 			else if (st->state == CSTATE_CONNECTING)
 			{
-				int			sock = PQsocket(st->con);
+				int			sock = active_driver->get_poll_fd(st->con);
 
 				if (sock < 0)
 				{
@@ -3844,7 +3759,7 @@ threadRun(void *arg)
 					break;
 				}
 				add_socket_to_set_ex(sockets, sock, nsocks++,
-									 st->connect_poll_mode == (int) PGRES_POLLING_WRITING);
+									 st->connect_poll_mode == PGBENCH_CONN_POLLING_WRITING);
 			}
 			else if (st->state == CSTATE_WAIT_RESULT ||
 					 st->state == CSTATE_WAIT_ROLLBACK_RESULT)
@@ -3853,11 +3768,16 @@ threadRun(void *arg)
 				 * waiting for result from server - nothing to do unless the
 				 * socket is readable
 				 */
-				int			sock = PQsocket(st->con);
+				int			sock = active_driver->get_poll_fd(st->con);
 
+				if (sock == PGBENCH_POLL_TASK)
+				{
+					min_usec = 0;
+					break;
+				}
 				if (sock < 0)
 				{
-					pg_log_error("invalid socket: %s", PQerrorMessage(st->con));
+					pg_log_error("invalid socket: %s", active_driver->error_message(st->con));
 					goto done;
 				}
 
@@ -3959,9 +3879,13 @@ threadRun(void *arg)
 				st->state == CSTATE_CONNECTING)
 			{
 				/* don't call advanceConnectionState unless socket is ready */
-				int			sock = PQsocket(st->con);
+				int			sock = active_driver->get_poll_fd(st->con);
 
-				if (sock < 0)
+				if (sock == PGBENCH_POLL_TASK)
+				{
+					/* Task-based driver without pollable FD */
+				}
+				else if (sock < 0)
 				{
 					if (st->state == CSTATE_CONNECTING)
 					{
@@ -3973,11 +3897,10 @@ threadRun(void *arg)
 							remains--;
 						continue;
 					}
-					pg_log_error("invalid socket: %s", PQerrorMessage(st->con));
+					pg_log_error("invalid socket: %s", active_driver->error_message(st->con));
 					goto done;
 				}
-
-				if (!socket_has_input(sockets, sock, nsocks++))
+				else if (!socket_has_input(sockets, sock, nsocks++))
 					continue;
 			}
 			else if (st->state == CSTATE_FINISHED ||
@@ -4095,7 +4018,7 @@ finishCon(CState *st)
 {
 	if (st->con != NULL)
 	{
-		PQfinish(st->con);
+		active_driver->finish(st->con);
 		st->con = NULL;
 		(void) __atomic_fetch_sub(&active_sessions_count, 1, __ATOMIC_RELEASE);
 		if (max_concurrent_sessions > 0)

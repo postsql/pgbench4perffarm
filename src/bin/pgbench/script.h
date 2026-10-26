@@ -108,6 +108,7 @@ typedef enum QueryMode
 } QueryMode;
 
 extern QueryMode querymode;
+extern bool querymode_explicitly_set;
 extern const char *const QUERYMODE[];
 
 /*

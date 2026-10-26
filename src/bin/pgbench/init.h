@@ -13,6 +13,7 @@
 #ifndef INIT_H
 #define INIT_H
 
+#include "db_driver.h"
 #include "libpq-fe.h"
 #include "pqexpbuffer.h"
 
@@ -43,9 +44,9 @@ extern int	partitions;
 extern partition_method_t partition_method;
 extern const char *const PARTITION_METHOD[];
 
-extern void tryExecuteStatement(PGconn *con, const char *sql);
+extern void tryExecuteStatement(PgBenchConn *con, const char *sql);
 extern void checkInitSteps(const char *initialize_steps);
 extern void runInitSteps(const char *initialize_steps);
-extern void GetTableInfo(PGconn *con, bool scale_given);
+extern void GetTableInfo(PgBenchConn *con, bool scale_given);
 
 #endif							/* INIT_H */

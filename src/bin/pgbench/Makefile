@@ -18,7 +18,10 @@ OBJS = \
 	init.o \
 	logdb.o \
 	poller.o \
+	postgres_driver.o \
+	quack_driver.o \
 	script.o \
+	spanner_driver.o \
 	stats.o \
 	variable.o \
 	pgbench.o
@@ -50,7 +53,7 @@ $(MKDIR_P) '$(CURDIR)'/tmp_check && \
 cd $(srcdir) && \
    TESTLOGDIR='$(CURDIR)/tmp_check/log' \
    TESTDATADIR='$(CURDIR)/tmp_check' \
-   PATH="$(bindir):$(CURDIR):$$PATH" \
+   PATH="$(CURDIR):$(bindir):$$PATH" \
    PGPORT='6$(DEF_PGPORT)' \
    PG_REGRESS='$(top_builddir)/src/test/regress/pg_regress' \
    $(PROVE) $(PG_PROVE_FLAGS) $(PROVE_FLAGS) $(if $(PROVE_TESTS),$(PROVE_TESTS),t/*.pl)
@@ -76,7 +79,7 @@ exprparse.h: exprparse.c
 exprparse.c: BISONFLAGS += -d
 
 exprparse.o exprscan.o: exprparse.h
-$(OBJS): pgbench.h variable.h config.h dataset.h script.h commands.h engine.h stats.h poller.h init.h logdb.h
+$(OBJS): pgbench.h db_driver.h variable.h config.h dataset.h script.h commands.h engine.h stats.h poller.h init.h logdb.h
 
 install: install-workloads
 
@@ -121,7 +124,7 @@ exprparse.c: BISONFLAGS += -d
 
 # Force these dependencies to be known even without dependency info built:
 exprparse.o exprscan.o: exprparse.h
-$(OBJS): pgbench.h variable.h config.h dataset.h script.h commands.h engine.h stats.h poller.h init.h logdb.h
+$(OBJS): pgbench.h db_driver.h variable.h config.h dataset.h script.h commands.h engine.h stats.h poller.h init.h logdb.h
 
 install: all installdirs
 	$(INSTALL_PROGRAM) pgbench$(X) '$(DESTDIR)$(bindir)/pgbench$(X)'

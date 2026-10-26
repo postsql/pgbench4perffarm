@@ -230,15 +230,17 @@ extern THREAD_BARRIER_T barrier;
 extern bool verbose_errors;
 extern bool exit_on_abort;
 extern bool continue_on_error;
+extern char *resolved_hostaddr;
+extern char *saved_password;
 
 extern void initRandomState(pg_prng_state *state);
 extern void resetEngineRunState(void);
 extern void resolveHostAddrOnce(void);
-extern PGconn *doConnect(void);
+extern PgBenchConn *doConnect(void);
 extern PGconn *doConnectCustom(const char *conninfo);
-extern PGconn *doConnectAsync(const char *db_override, const char *user_override);
+extern PgBenchConn *doConnectAsync(const char *db_override, const char *user_override);
 extern void disconnect_all(CState *state, int length);
-extern void printVersion(PGconn *con);
+extern void printVersion(PgBenchConn *con);
 extern void evaluateSlaRules(StatsData *total, double bench_duration, bool print_stdout);
 extern void writeReportJsonObject(FILE *jfp, StatsData *total, double bench_duration,
 								  double tpmc, double qphh);

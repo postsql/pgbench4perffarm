@@ -9,7 +9,10 @@ pgbench_sources = files(
   'init.c',
   'logdb.c',
   'poller.c',
+  'postgres_driver.c',
+  'quack_driver.c',
   'script.c',
+  'spanner_driver.c',
   'stats.c',
   'variable.c',
 )
@@ -53,6 +56,7 @@ tests += {
     'tests': [
       't/001_pgbench_with_server.pl',
       't/002_pgbench_no_server.pl',
+      't/003_pgbench_drivers.pl',
     ],
   },
 }

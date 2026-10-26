@@ -17,6 +17,7 @@
 #include "common/pgbench_funcs.h"
 #include "fe_utils/conditional.h"
 #include "libpq-fe.h"
+#include "db_driver.h"
 #include "stats.h"
 #include "variable.h"
 
@@ -390,7 +391,7 @@ typedef struct CallFrame
  */
 typedef struct
 {
-	PGconn	   *con;			/* connection handle to DB */
+	PgBenchConn *con;			/* connection handle to DB */
 	int			id;				/* client No. */
 	ConnectionStateEnum state;	/* state machine's current state. */
 	ConditionalStack cstack;	/* enclosing conditionals state */
@@ -458,7 +459,7 @@ typedef struct
 
 
 	/* Pillar 6: Non-blocking session connect polling state */
-	PostgresPollingStatusType connect_poll_mode;
+	PgBenchConnStatus connect_poll_mode;
 	pg_time_usec_t session_conn_start;
 	char	   *session_target_db;
 	char	   *session_target_user;

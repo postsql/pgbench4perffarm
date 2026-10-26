@@ -84,54 +84,66 @@ get_table_relkind(PGconn *con, const char *table)
 	return relkind;
 }
 
-/* call PQexec() and exit() on failure */
+/* call active_driver->exec_sync() and exit() on failure */
 static void
-executeStatement(PGconn *con, const char *sql)
+executeStatement(PgBenchConn *con, const char *sql)
 {
-	PGresult   *res;
+	PgBenchResult *res;
 
-	res = PQexec(con, sql);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	res = active_driver->exec_sync(con, sql);
+	if (active_driver->result_status(res) != PGBENCH_RES_COMMAND_OK &&
+		active_driver->result_status(res) != PGBENCH_RES_TUPLES_OK)
 	{
-		pg_log_error("query failed: %s", PQerrorMessage(con));
+		pg_log_error("query failed: %s", active_driver->error_message(con));
 		pg_log_error_detail("Query was: %s", sql);
 		exit(1);
 	}
-	PQclear(res);
+	active_driver->clear_result(res);
 }
 
-/* call PQexec() and complain, but without exiting, on failure */
+/* call active_driver->exec_sync() and complain, but without exiting, on failure */
 void
-tryExecuteStatement(PGconn *con, const char *sql)
+tryExecuteStatement(PgBenchConn *con, const char *sql)
 {
-	PGresult   *res;
+	PgBenchResult *res;
 
-	res = PQexec(con, sql);
-	if (PQresultStatus(res) != PGRES_COMMAND_OK)
+	res = active_driver->exec_sync(con, sql);
+	if (active_driver->result_status(res) != PGBENCH_RES_COMMAND_OK &&
+		active_driver->result_status(res) != PGBENCH_RES_TUPLES_OK)
 	{
-		pg_log_error("%s", PQerrorMessage(con));
+		pg_log_error("%s", active_driver->error_message(con));
 		pg_log_error_detail("(ignoring this error and continuing anyway)");
 	}
-	PQclear(res);
+	active_driver->clear_result(res);
 }
 
 /*
  * Remove old pgbench tables, if any exist
  */
 static void
-initDropTables(PGconn *con)
+initDropTables(PgBenchConn *con)
 {
 	fprintf(stderr, "dropping old tables...\n");
 
-	/*
-	 * We drop all the tables in one command, so that whether there are
-	 * foreign key dependencies or not doesn't matter.
-	 */
-	executeStatement(con, "drop table if exists "
-					 "pgbench_accounts, "
-					 "pgbench_branches, "
-					 "pgbench_history, "
-					 "pgbench_tellers");
+	if (active_driver == &postgres_driver)
+	{
+		/*
+		 * We drop all the tables in one command, so that whether there are
+		 * foreign key dependencies or not doesn't matter.
+		 */
+		executeStatement(con, "drop table if exists "
+						 "pgbench_accounts, "
+						 "pgbench_branches, "
+						 "pgbench_history, "
+						 "pgbench_tellers");
+	}
+	else
+	{
+		executeStatement(con, "drop table if exists pgbench_history");
+		executeStatement(con, "drop table if exists pgbench_accounts");
+		executeStatement(con, "drop table if exists pgbench_tellers");
+		executeStatement(con, "drop table if exists pgbench_branches");
+	}
 }
 
 /*
@@ -141,7 +153,7 @@ initDropTables(PGconn *con)
  * with a known size, so we choose to partition it.
  */
 static void
-createPartitions(PGconn *con)
+createPartitions(PgBenchConn *con)
 {
 	PQExpBufferData query;
 
@@ -198,7 +210,8 @@ createPartitions(PGconn *con)
 		 * Per ddlinfo in initCreateTables, fillfactor is needed on table
 		 * pgbench_accounts.
 		 */
-		appendPQExpBuffer(&query, " with (fillfactor=%d)", fillfactor);
+		if (active_driver == &postgres_driver)
+			appendPQExpBuffer(&query, " with (fillfactor=%d)", fillfactor);
 
 		executeStatement(con, query.data);
 	}
@@ -210,7 +223,7 @@ createPartitions(PGconn *con)
  * Create pgbench's standard tables
  */
 static void
-initCreateTables(PGconn *con)
+initCreateTables(PgBenchConn *con)
 {
 	/*
 	 * Note: TPC-B requires at least 100 bytes per row, and the "filler"
@@ -260,6 +273,46 @@ initCreateTables(PGconn *con)
 
 	fprintf(stderr, "creating tables...\n");
 
+	if (active_driver == &spanner_driver)
+	{
+		if (active_driver->caps.param_style == PGBENCH_PARAM_AT_P)
+		{
+			executeStatement(con,
+							 "CREATE TABLE pgbench_branches ("
+							 "bid INT64 NOT NULL, bbalance INT64, filler STRING(88)"
+							 ") PRIMARY KEY (bid)");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_tellers ("
+							 "tid INT64 NOT NULL, bid INT64, tbalance INT64, filler STRING(84)"
+							 ") PRIMARY KEY (tid)");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_accounts ("
+							 "aid INT64 NOT NULL, bid INT64, abalance INT64, filler STRING(84)"
+							 ") PRIMARY KEY (aid)");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_history ("
+							 "tid INT64, bid INT64, aid INT64, delta INT64, mtime TIMESTAMP, filler STRING(22)"
+							 ") PRIMARY KEY (aid, tid, bid, mtime)");
+		}
+		else
+		{
+			executeStatement(con,
+							 "CREATE TABLE pgbench_branches ("
+							 "bid bigint not null primary key, bbalance bigint, filler varchar(88))");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_tellers ("
+							 "tid bigint not null primary key, bid bigint, tbalance bigint, filler varchar(84))");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_accounts ("
+							 "aid bigint not null primary key, bid bigint, abalance bigint, filler varchar(84))");
+			executeStatement(con,
+							 "CREATE TABLE pgbench_history ("
+							 "tid bigint, bid bigint, aid bigint, delta bigint, mtime timestamptz, filler varchar(22), "
+							 "PRIMARY KEY (aid, tid, bid))");
+		}
+		return;
+	}
+
 	initPQExpBuffer(&query);
 
 	for (size_t i = 0; i < lengthof(DDLs); i++)
@@ -268,7 +321,8 @@ initCreateTables(PGconn *con)
 
 		/* Construct new create table statement. */
 		printfPQExpBuffer(&query, "create%s table %s(%s)",
-						  (unlogged_tables && partition_method == PART_NONE) ? " unlogged" : "",
+						  (unlogged_tables && partition_method == PART_NONE &&
+						   active_driver == &postgres_driver) ? " unlogged" : "",
 						  ddl->table,
 						  (scale >= SCALE_32BIT_THRESHOLD) ? ddl->bigcols : ddl->smcols);
 
@@ -276,19 +330,19 @@ initCreateTables(PGconn *con)
 		if (partition_method != PART_NONE && strcmp(ddl->table, "pgbench_accounts") == 0)
 			appendPQExpBuffer(&query,
 							  " partition by %s (aid)", PARTITION_METHOD[partition_method]);
-		else if (ddl->declare_fillfactor)
+		else if (ddl->declare_fillfactor && active_driver == &postgres_driver)
 		{
 			/* fillfactor is only expected on actual tables */
 			appendPQExpBuffer(&query, " with (fillfactor=%d)", fillfactor);
 		}
 
-		if (tablespace != NULL)
+		if (tablespace != NULL && active_driver == &postgres_driver)
 		{
 			char	   *escape_tablespace;
 
-			escape_tablespace = PQescapeIdentifier(con, tablespace, strlen(tablespace));
+			escape_tablespace = active_driver->escape_identifier(con, tablespace, strlen(tablespace));
 			appendPQExpBuffer(&query, " tablespace %s", escape_tablespace);
-			PQfreemem(escape_tablespace);
+			active_driver->free_mem(escape_tablespace);
 		}
 
 		executeStatement(con, query.data);
@@ -304,13 +358,23 @@ initCreateTables(PGconn *con)
  * Truncate away any old data, in one command in case there are foreign keys
  */
 static void
-initTruncateTables(PGconn *con)
+initTruncateTables(PgBenchConn *con)
 {
-	executeStatement(con, "truncate table "
-					 "pgbench_accounts, "
-					 "pgbench_branches, "
-					 "pgbench_history, "
-					 "pgbench_tellers");
+	if (active_driver == &postgres_driver)
+	{
+		executeStatement(con, "truncate table "
+						 "pgbench_accounts, "
+						 "pgbench_branches, "
+						 "pgbench_history, "
+						 "pgbench_tellers");
+	}
+	else
+	{
+		executeStatement(con, "delete from pgbench_history where 1=1");
+		executeStatement(con, "delete from pgbench_accounts where 1=1");
+		executeStatement(con, "delete from pgbench_tellers where 1=1");
+		executeStatement(con, "delete from pgbench_branches where 1=1");
+	}
 }
 
 static void
@@ -341,14 +405,14 @@ initAccount(PQExpBufferData *sql, int64 curr)
 }
 
 static void
-initPopulateTable(PGconn *con, const char *table, int64 base,
+initPopulateTable(PgBenchConn *con, const char *table, int64 base,
 				  initRowMethod init_row)
 {
 	int			n;
 	int64		k;
 	int			chars = 0;
 	int			prev_chars = 0;
-	PGresult   *res;
+	PgBenchCopyStream *stream;
 	PQExpBufferData sql;
 	char		copy_statement[256];
 	const char *copy_statement_fmt = "copy %s from stdin";
@@ -364,10 +428,10 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 	initPQExpBuffer(&sql);
 
 	/* Use COPY with FREEZE on v14 and later for all ordinary tables */
-	if ((PQserverVersion(con) >= 140000) &&
-		get_table_relkind(con, table) == RELKIND_RELATION)
+	if (active_driver == &postgres_driver &&
+		(PQserverVersion((PGconn *) con) >= 140000) &&
+		get_table_relkind((PGconn *) con, table) == RELKIND_RELATION)
 		copy_statement_fmt = "copy %s from stdin with (freeze on)";
-
 
 	n = pg_snprintf(copy_statement, sizeof(copy_statement), copy_statement_fmt, table);
 	if (n >= sizeof(copy_statement))
@@ -375,11 +439,9 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 	else if (n == -1)
 		pg_fatal("invalid format string");
 
-	res = PQexec(con, copy_statement);
-
-	if (PQresultStatus(res) != PGRES_COPY_IN)
-		pg_fatal("unexpected copy in result: %s", PQerrorMessage(con));
-	PQclear(res);
+	stream = active_driver->copy_begin(con, table, 0, NULL, copy_statement);
+	if (stream == NULL)
+		pg_fatal("unexpected copy in result: %s", active_driver->error_message(con));
 
 	start = pg_time_now();
 
@@ -388,8 +450,8 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 		int64		j = k + 1;
 
 		init_row(&sql, k);
-		if (PQputline(con, sql.data))
-			pg_fatal("PQputline failed");
+		if (!active_driver->copy_put_data(stream, sql.data, (int) sql.len))
+			pg_fatal("copy_put_data failed: %s", active_driver->error_message(con));
 
 		if (CancelRequested)
 			break;
@@ -451,10 +513,8 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
 	if (chars != 0 && eol != '\n')
 		fprintf(stderr, "%*c\r", chars, ' ');	/* Clear the current line */
 
-	if (PQputline(con, "\\.\n"))
-		pg_fatal("very last PQputline failed");
-	if (PQendcopy(con))
-		pg_fatal("PQendcopy failed");
+	if (!active_driver->copy_end(stream, NULL))
+		pg_fatal("copy_end failed: %s", active_driver->error_message(con));
 
 	termPQExpBuffer(&sql);
 }
@@ -466,7 +526,7 @@ initPopulateTable(PGconn *con, const char *table, int64 base,
  * a blank-padded string in pgbench_accounts.
  */
 static void
-initGenerateDataClientSide(PGconn *con)
+initGenerateDataClientSide(PgBenchConn *con)
 {
 	fprintf(stderr, "generating data (client-side)...\n");
 
@@ -474,7 +534,8 @@ initGenerateDataClientSide(PGconn *con)
 	 * we do all of this in one transaction to enable the backend's
 	 * data-loading optimizations
 	 */
-	executeStatement(con, "begin");
+	if (active_driver != &spanner_driver)
+		executeStatement(con, "begin");
 
 	/* truncate away any old data */
 	initTruncateTables(con);
@@ -487,7 +548,8 @@ initGenerateDataClientSide(PGconn *con)
 	initPopulateTable(con, "pgbench_tellers", ntellers, initTeller);
 	initPopulateTable(con, "pgbench_accounts", naccounts, initAccount);
 
-	executeStatement(con, "commit");
+	if (active_driver != &spanner_driver)
+		executeStatement(con, "commit");
 }
 
 /*
@@ -498,7 +560,7 @@ initGenerateDataClientSide(PGconn *con)
  * and is a blank-padded string in pgbench_accounts.
  */
 static void
-initGenerateDataServerSide(PGconn *con)
+initGenerateDataServerSide(PgBenchConn *con)
 {
 	PQExpBufferData sql;
 
@@ -543,9 +605,11 @@ initGenerateDataServerSide(PGconn *con)
  * Invoke vacuum on the standard tables
  */
 static void
-initVacuum(PGconn *con)
+initVacuum(PgBenchConn *con)
 {
 	fprintf(stderr, "vacuuming...\n");
+	if (!active_driver->caps.supports_vacuum)
+		return;
 	executeStatement(con, "vacuum analyze pgbench_branches");
 	executeStatement(con, "vacuum analyze pgbench_tellers");
 	executeStatement(con, "vacuum analyze pgbench_accounts");
@@ -556,7 +620,7 @@ initVacuum(PGconn *con)
  * Create primary keys on the standard tables
  */
 static void
-initCreatePKeys(PGconn *con)
+initCreatePKeys(PgBenchConn *con)
 {
 	static const char *const DDLINDEXes[] = {
 		"alter table pgbench_branches add primary key (bid)",
@@ -566,6 +630,9 @@ initCreatePKeys(PGconn *con)
 	PQExpBufferData query;
 
 	fprintf(stderr, "creating primary keys...\n");
+	if (active_driver == &spanner_driver)
+		return;
+
 	initPQExpBuffer(&query);
 
 	for (size_t i = 0; i < lengthof(DDLINDEXes); i++)
@@ -573,14 +640,14 @@ initCreatePKeys(PGconn *con)
 		resetPQExpBuffer(&query);
 		appendPQExpBufferStr(&query, DDLINDEXes[i]);
 
-		if (index_tablespace != NULL)
+		if (index_tablespace != NULL && active_driver == &postgres_driver)
 		{
 			char	   *escape_tablespace;
 
-			escape_tablespace = PQescapeIdentifier(con, index_tablespace,
-												   strlen(index_tablespace));
+			escape_tablespace = active_driver->escape_identifier(con, index_tablespace,
+																 strlen(index_tablespace));
 			appendPQExpBuffer(&query, " using index tablespace %s", escape_tablespace);
-			PQfreemem(escape_tablespace);
+			active_driver->free_mem(escape_tablespace);
 		}
 
 		executeStatement(con, query.data);
@@ -593,7 +660,7 @@ initCreatePKeys(PGconn *con)
  * Create foreign key constraints between the standard tables
  */
 static void
-initCreateFKeys(PGconn *con)
+initCreateFKeys(PgBenchConn *con)
 {
 	static const char *const DDLKEYs[] = {
 		"alter table pgbench_tellers add constraint pgbench_tellers_bid_fkey foreign key (bid) references pgbench_branches",
@@ -641,7 +708,7 @@ void
 runInitSteps(const char *initialize_steps)
 {
 	PQExpBufferData stats;
-	PGconn	   *con;
+	PgBenchConn *con;
 	const char *step;
 	double		run_time = 0.0;
 	bool		first = true;
@@ -652,7 +719,7 @@ runInitSteps(const char *initialize_steps)
 		pg_fatal("could not create connection for initialization");
 
 	setup_cancel_handler(NULL);
-	SetCancelConn(con);
+	active_driver->set_cancel_conn(con);
 
 	for (step = initialize_steps; *step != '\0'; step++)
 	{
@@ -693,7 +760,7 @@ runInitSteps(const char *initialize_steps)
 				break;			/* ignore */
 			default:
 				pg_log_error("unrecognized initialization step \"%c\"", *step);
-				PQfinish(con);
+				active_driver->finish(con);
 				exit(1);
 		}
 
@@ -713,8 +780,8 @@ runInitSteps(const char *initialize_steps)
 	}
 
 	fprintf(stderr, "done in %.2f s (%s).\n", run_time, stats.data);
-	ResetCancelConn();
-	PQfinish(con);
+	active_driver->reset_cancel_conn();
+	active_driver->finish(con);
 	termPQExpBuffer(&stats);
 }
 
@@ -723,37 +790,44 @@ runInitSteps(const char *initialize_steps)
  * partition_method and partitions.
  */
 void
-GetTableInfo(PGconn *con, bool scale_given)
+GetTableInfo(PgBenchConn *con, bool scale_given)
 {
-	PGresult   *res;
+	PgBenchResult *res;
 
 	/*
 	 * get the scaling factor that should be same as count(*) from
 	 * pgbench_branches if this is not a custom query
 	 */
-	res = PQexec(con, "select count(*) from pgbench_branches");
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	res = active_driver->exec_sync(con, "select count(*) from pgbench_branches");
+	if (active_driver->result_status(res) != PGBENCH_RES_TUPLES_OK)
 	{
-		char	   *sqlState = PQresultErrorField(res, PG_DIAG_SQLSTATE);
+		const char *sqlState = active_driver->result_error_field(res, PG_DIAG_SQLSTATE);
 
-		pg_log_error("could not count number of branches: %s", PQerrorMessage(con));
+		pg_log_error("could not count number of branches: %s", active_driver->error_message(con));
 
 		if (sqlState && strcmp(sqlState, ERRCODE_UNDEFINED_TABLE) == 0)
 			pg_log_error_hint("Perhaps you need to do initialization (\"pgbench -i\") in database \"%s\".",
-							  PQdb(con));
+							  active_driver->get_db(con));
 
 		exit(1);
 	}
-	scale = atoi(PQgetvalue(res, 0, 0));
+	scale = atoi(active_driver->get_value(res, 0, 0));
 	if (scale < 0)
 		pg_fatal("invalid count(*) from pgbench_branches: \"%s\"",
-				 PQgetvalue(res, 0, 0));
-	PQclear(res);
+				 active_driver->get_value(res, 0, 0));
+	active_driver->clear_result(res);
 
 	/* warn if we override user-given -s switch */
 	if (scale_given)
 		pg_log_warning("scale option ignored, using count from pgbench_branches table (%d)",
 					   scale);
+
+	if (!active_driver->caps.supports_pg_catalog)
+	{
+		partition_method = PART_NONE;
+		partitions = 0;
+		return;
+	}
 
 	/*
 	 * Get the partition information for the first "pgbench_accounts" table
@@ -770,42 +844,43 @@ GetTableInfo(PGconn *con, bool scale_given)
 	 * We assume no partitioning on any failure, so as to avoid failing on an
 	 * old version without "pg_partitioned_table".
 	 */
-	res = PQexec(con,
-				 "select o.n, p.partstrat, pg_catalog.count(i.inhparent) "
-				 "from pg_catalog.pg_class as c "
-				 "join pg_catalog.pg_namespace as n on (n.oid = c.relnamespace) "
-				 "cross join lateral (select pg_catalog.array_position(pg_catalog.current_schemas(true), n.nspname)) as o(n) "
-				 "left join pg_catalog.pg_partitioned_table as p on (p.partrelid = c.oid) "
-				 "left join pg_catalog.pg_inherits as i on (c.oid = i.inhparent) "
-				 "where c.relname = 'pgbench_accounts' and o.n is not null "
-				 "group by 1, 2 "
-				 "order by 1 asc "
-				 "limit 1");
+	res = active_driver->exec_sync(con,
+								   "select o.n, p.partstrat, pg_catalog.count(i.inhparent) "
+								   "from pg_catalog.pg_class as c "
+								   "join pg_catalog.pg_namespace as n on (n.oid = c.relnamespace) "
+								   "cross join lateral (select pg_catalog.array_position(pg_catalog.current_schemas(true), n.nspname)) as o(n) "
+								   "left join pg_catalog.pg_partitioned_table as p on (p.partrelid = c.oid) "
+								   "left join pg_catalog.pg_inherits as i on (c.oid = i.inhparent) "
+								   "where c.relname = 'pgbench_accounts' and o.n is not null "
+								   "group by 1, 2 "
+								   "order by 1 asc "
+								   "limit 1");
 
-	if (PQresultStatus(res) != PGRES_TUPLES_OK)
+	if (active_driver->result_status(res) != PGBENCH_RES_TUPLES_OK)
 	{
 		/* probably an older version, coldly assume no partitioning */
 		partition_method = PART_NONE;
 		partitions = 0;
 	}
-	else if (PQntuples(res) == 0)
+	else if (active_driver->ntuples(res) == 0)
 	{
 		/*
 		 * This case is unlikely as pgbench already found "pgbench_branches"
 		 * above to compute the scale.
 		 */
 		pg_log_error("no pgbench_accounts table found in \"search_path\"");
-		pg_log_error_hint("Perhaps you need to do initialization (\"pgbench -i\") in database \"%s\".", PQdb(con));
+		pg_log_error_hint("Perhaps you need to do initialization (\"pgbench -i\") in database \"%s\".",
+						  active_driver->get_db(con));
 		exit(1);
 	}
-	else						/* PQntuples(res) == 1 */
+	else						/* active_driver->ntuples(res) == 1 */
 	{
 		/* normal case, extract partition information */
-		if (PQgetisnull(res, 0, 1))
+		if (active_driver->get_is_null(res, 0, 1))
 			partition_method = PART_NONE;
 		else
 		{
-			char	   *ps = PQgetvalue(res, 0, 1);
+			const char *ps = active_driver->get_value(res, 0, 1);
 
 			/* column must be there */
 			Assert(ps != NULL);
@@ -821,8 +896,8 @@ GetTableInfo(PGconn *con, bool scale_given)
 			}
 		}
 
-		partitions = atoi(PQgetvalue(res, 0, 2));
+		partitions = atoi(active_driver->get_value(res, 0, 2));
 	}
 
-	PQclear(res);
+	active_driver->clear_result(res);
 }

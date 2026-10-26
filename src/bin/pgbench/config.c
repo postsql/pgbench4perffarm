@@ -1506,6 +1506,16 @@ applyConfigObject(const char *config_path,
 			pg_free(config_description);
 			config_description = pg_strdup(expectJsonString(config_path, k, v));
 		}
+		else if (strcmp(k, "driver") == 0)
+		{
+			if (v->type != CJSON_NULL)
+				setActiveDriverByName(expectJsonString(config_path, k, v));
+		}
+		else if (strcmp(k, "dialect") == 0)
+		{
+			if (v->type != CJSON_NULL)
+				setDriverDialect(expectJsonString(config_path, k, v));
+		}
 		else if (strcmp(k, "host") == 0)
 		{
 			if (v->type != CJSON_NULL)
@@ -1533,7 +1543,10 @@ applyConfigObject(const char *config_path,
 		else if (strcmp(k, "dbname") == 0 || strcmp(k, "database") == 0)
 		{
 			if (v->type != CJSON_NULL)
+			{
 				dbName = pg_strdup(expectJsonString(config_path, k, v));
+				detectDriverFromConnStr(dbName);
+			}
 		}
 		else if (strcmp(k, "scale") == 0)
 		{
@@ -1597,6 +1610,7 @@ applyConfigObject(const char *config_path,
 			if (querymode >= NUM_QUERYMODE)
 				pg_fatal("%s:%d: invalid query_mode \"%s\" (expected \"simple\", \"extended\", or \"prepared\")",
 						 config_path, v->line_number, qm);
+			querymode_explicitly_set = true;
 		}
 		else if (strcmp(k, "clients") == 0 || strcmp(k, "client") == 0)
 			nclients = expectJsonInt(config_path, k, v, 1, INT_MAX);
@@ -2156,7 +2170,7 @@ loadConfigFile(const char *config_path,
 void
 runConfigInitSteps(Variables *cli_vars)
 {
-	PGconn	   *con;
+	PgBenchConn *con;
 	int			global_scale = scale;
 
 	resolveHostAddrOnce();
@@ -2164,7 +2178,7 @@ runConfigInitSteps(Variables *cli_vars)
 	if (con == NULL)
 		pg_fatal("could not create connection for initialization");
 	printVersion(con);
-	PQfinish(con);
+	active_driver->finish(con);
 
 	for (int s = 0; s < num_config_init_steps; s++)
 	{
@@ -2366,7 +2380,7 @@ runConfigInitSteps(Variables *cli_vars)
 		nthreads = copy_nthreads;
 		runRegisteredCopyDatasets(con);
 		nthreads = saved_nthreads;
-		PQfinish(con);
+		active_driver->finish(con);
 	}
 }
 
@@ -2542,6 +2556,20 @@ writeConfigJsonObject(FILE *fp, int base_indent, bool include_init_steps)
 		fprintIndent(fp, ind);
 		fputs("\"description\": ", fp);
 		fprintConfigJsonStr(fp, config_description);
+		fputs(",\n", fp);
+	}
+	if (active_driver != &postgres_driver || driver_explicitly_set)
+	{
+		fprintIndent(fp, ind);
+		fputs("\"driver\": ", fp);
+		fprintConfigJsonStr(fp, active_driver->name);
+		fputs(",\n", fp);
+	}
+	if (driver_dialect != NULL)
+	{
+		fprintIndent(fp, ind);
+		fputs("\"dialect\": ", fp);
+		fprintConfigJsonStr(fp, driver_dialect);
 		fputs(",\n", fp);
 	}
 	if (pghost != NULL)

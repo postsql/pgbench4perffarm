@@ -172,7 +172,9 @@ usage(void)
 		   "  --verbose-errors         print messages of all errors\n"
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
-		   "  -d, --dbname=DBNAME      database name to connect to\n"
+		   "  -d, --dbname=DBNAME      database name or URI to connect to\n"
+		   "  --driver=NAME            database driver: postgres|spanner|quack (default: postgres)\n"
+		   "  --dialect=NAME           SQL dialect for spanner driver: googlesql|postgresql\n"
 		   "  -h, --host=HOSTNAME      database server host or socket directory\n"
 		   "  -p, --port=PORT          database server port number\n"
 		   "  -U, --username=USERNAME  connect as specified database user\n"
@@ -825,6 +827,8 @@ main(int argc, char **argv)
 		{"log-db-schema", required_argument, NULL, 38},
 		{"log-db-index", no_argument, NULL, 39},
 		{"run-label", required_argument, NULL, 40},
+		{"driver", required_argument, NULL, 41},
+		{"dialect", required_argument, NULL, 42},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -860,7 +864,7 @@ main(int argc, char **argv)
 	struct rlimit rlim;
 #endif
 
-	PGconn	   *con;
+	PgBenchConn *con;
 	char	   *env;
 
 	int			exit_code = 0;
@@ -901,12 +905,16 @@ main(int argc, char **argv)
 		pg_fatal("error while setting random seed from PGBENCH_RANDOM_SEED environment variable");
 
 	/*
-	 * Pre-scan argv for -i/--initialize, --dump-config, and --config so that
-	 * configuration files are loaded before CLI option overrides regardless
-	 * of argument ordering on the command line.
+	 * Pre-scan argv for -i/--initialize, --dump-config, --driver, --dialect,
+	 * -d/--dbname, and --config so that driver capabilities and configuration
+	 * files are loaded before CLI option overrides regardless of argument
+	 * ordering on the command line.
 	 */
 	{
 		bool		has_dump_config = false;
+
+		if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
+			detectDriverFromConnStr(env);
 
 		for (i = 1; i < argc; i++)
 		{
@@ -917,6 +925,25 @@ main(int argc, char **argv)
 			else if (strncmp(argv[i], "--dump-config=", 14) == 0 ||
 					 strcmp(argv[i], "--dump-config") == 0)
 				has_dump_config = true;
+			else if (strncmp(argv[i], "--driver=", 9) == 0)
+				setActiveDriverByName(argv[i] + 9);
+			else if (strcmp(argv[i], "--driver") == 0 && i + 1 < argc)
+				setActiveDriverByName(argv[++i]);
+			else if (strncmp(argv[i], "--dialect=", 10) == 0)
+				setDriverDialect(argv[i] + 10);
+			else if (strcmp(argv[i], "--dialect") == 0 && i + 1 < argc)
+				setDriverDialect(argv[++i]);
+			else if (strncmp(argv[i], "--dbname=", 9) == 0)
+				detectDriverFromConnStr(argv[i] + 9);
+			else if ((strcmp(argv[i], "-d") == 0 || strcmp(argv[i], "--dbname") == 0) &&
+					 i + 1 < argc)
+				detectDriverFromConnStr(argv[++i]);
+			else if (strncmp(argv[i], "spanner://", 10) == 0 ||
+					 strncmp(argv[i], "quack://", 8) == 0 ||
+					 strncmp(argv[i], "duckdb://", 9) == 0 ||
+					 strncmp(argv[i], "postgres://", 11) == 0 ||
+					 strncmp(argv[i], "postgresql://", 13) == 0)
+				detectDriverFromConnStr(argv[i]);
 		}
 		for (i = 1; i < argc; i++)
 		{
@@ -1002,6 +1029,7 @@ main(int argc, char **argv)
 				break;
 			case 'd':
 				dbName = pg_strdup(optarg);
+				detectDriverFromConnStr(dbName);
 				break;
 			case 'D':
 				{
@@ -1075,6 +1103,7 @@ main(int argc, char **argv)
 						break;
 				if (querymode >= NUM_QUERYMODE)
 					pg_fatal("invalid query mode (-M): \"%s\"", optarg);
+				querymode_explicitly_set = true;
 				break;
 			case 'n':
 				is_no_vacuum = true;
@@ -1383,11 +1412,44 @@ main(int argc, char **argv)
 				pg_free(run_label);
 				run_label = pg_strdup(optarg);
 				break;
+			case 41:			/* driver */
+				setActiveDriverByName(optarg);
+				break;
+			case 42:			/* dialect */
+				setDriverDialect(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
 				exit(1);
 		}
+	}
+
+	if (dbName == NULL)
+	{
+		if (argc > optind)
+			dbName = argv[optind++];
+		else
+		{
+			if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
+				dbName = env;
+			else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
+				dbName = env;
+			else
+				dbName = get_user_name_or_exit(progname);
+		}
+	}
+	detectDriverFromConnStr(dbName);
+	if (!querymode_explicitly_set && replay_trace_file == NULL &&
+		active_driver->caps.prefer_prepared_mode)
+		querymode = QUERY_PREPARED;
+
+	if (optind < argc)
+	{
+		pg_log_error("too many command-line arguments (first is \"%s\")",
+					 argv[optind]);
+		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		exit(1);
 	}
 
 	if (num_groups == 1)
@@ -1567,29 +1629,6 @@ main(int argc, char **argv)
 	 */
 	throttle_delay *= nthreads;
 
-	if (dbName == NULL)
-	{
-		if (argc > optind)
-			dbName = argv[optind++];
-		else
-		{
-			if ((env = getenv("PGDATABASE")) != NULL && *env != '\0')
-				dbName = env;
-			else if ((env = getenv("PGUSER")) != NULL && *env != '\0')
-				dbName = env;
-			else
-				dbName = get_user_name_or_exit(progname);
-		}
-	}
-
-	if (optind < argc)
-	{
-		pg_log_error("too many command-line arguments (first is \"%s\")",
-					 argv[optind]);
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
-		exit(1);
-	}
-
 	if (is_init_mode)
 	{
 		if (dump_config_file != NULL)
@@ -1598,9 +1637,13 @@ main(int argc, char **argv)
 			exit(0);
 		}
 
+		if (!active_driver->init_global(dbName, nthreads, nclients))
+			exit(1);
+
 		if (num_config_init_steps > 0)
 		{
 			runConfigInitSteps(&state[0].variables);
+			active_driver->shutdown_global();
 			exit(0);
 		}
 
@@ -1649,8 +1692,9 @@ main(int argc, char **argv)
 			nthreads = copy_nthreads;
 			runRegisteredCopyDatasets(con);
 			nthreads = saved_nthreads;
-			PQfinish(con);
+			active_driver->finish(con);
 		}
+		active_driver->shutdown_global();
 		exit(0);
 	}
 	else
@@ -1701,6 +1745,9 @@ main(int argc, char **argv)
 		exit(0);
 	}
 
+	if (!active_driver->init_global(dbName, nthreads, nclients))
+		exit(1);
+
 	/* Standalone --copy-dataset without any benchmark scripts */
 	if (num_copy_dataset_specs > 0 && num_scripts == 0)
 	{
@@ -1710,7 +1757,8 @@ main(int argc, char **argv)
 		printVersion(con);
 		nthreads = copy_nthreads;
 		runRegisteredCopyDatasets(con);
-		PQfinish(con);
+		active_driver->finish(con);
+		active_driver->shutdown_global();
 		exit(0);
 	}
 
@@ -1775,9 +1823,9 @@ main(int argc, char **argv)
 	printVersion(con);
 
 	pg_log_debug("pghost: %s pgport: %s nclients: %d %s: %d dbName: %s",
-				 PQhost(con), PQport(con), nclients,
+				 active_driver->get_host(con), active_driver->get_port(con), nclients,
 				 duration <= 0 ? "nxacts" : "duration",
-				 duration <= 0 ? nxacts : duration, PQdb(con));
+				 duration <= 0 ? nxacts : duration, active_driver->get_db(con));
 
 	if (num_copy_dataset_specs > 0 && num_config_init_steps == 0)
 	{
@@ -1862,20 +1910,32 @@ main(int argc, char **argv)
 
 	if (!is_no_vacuum)
 	{
-		fprintf(stderr, "starting vacuum...");
-		tryExecuteStatement(con, "vacuum pgbench_branches");
-		tryExecuteStatement(con, "vacuum pgbench_tellers");
-		tryExecuteStatement(con, "truncate pgbench_history");
-		fprintf(stderr, "end.\n");
-
-		if (do_vacuum_accounts)
+		if (active_driver->caps.supports_vacuum)
 		{
-			fprintf(stderr, "starting vacuum pgbench_accounts...");
-			tryExecuteStatement(con, "vacuum analyze pgbench_accounts");
+			fprintf(stderr, "starting vacuum...");
+			tryExecuteStatement(con, "vacuum pgbench_branches");
+			tryExecuteStatement(con, "vacuum pgbench_tellers");
+			tryExecuteStatement(con, "truncate pgbench_history");
+			fprintf(stderr, "end.\n");
+
+			if (do_vacuum_accounts)
+			{
+				fprintf(stderr, "starting vacuum pgbench_accounts...");
+				tryExecuteStatement(con, "vacuum analyze pgbench_accounts");
+				fprintf(stderr, "end.\n");
+			}
+		}
+		else if (internal_script_used)
+		{
+			fprintf(stderr, "clearing pgbench_history...");
+			if (strcmp(active_driver->name, "spanner") == 0)
+				tryExecuteStatement(con, "DELETE FROM pgbench_history WHERE true");
+			else
+				tryExecuteStatement(con, "DELETE FROM pgbench_history");
 			fprintf(stderr, "end.\n");
 		}
 	}
-	PQfinish(con);
+	active_driver->finish(con);
 
 	if (log_db_conninfo != NULL)
 		logDbBootstrapAndStartRun();
@@ -2038,6 +2098,7 @@ main(int argc, char **argv)
 		exit_code = 1;
 	}
 
+	active_driver->shutdown_global();
 	return exit_code;
 }
 

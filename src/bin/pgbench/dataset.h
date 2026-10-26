@@ -68,7 +68,7 @@ extern void parseVectorDatasetSpec(const char *spec);
 extern void parseVectorBaseSpec(const char *spec);
 extern void parseGroundTruthTableSpec(const char *spec);
 extern void registerCopyDatasetSpec(const char *spec);
-extern void runRegisteredCopyDatasets(PGconn *con);
+extern void runRegisteredCopyDatasets(PgBenchConn *con);
 extern void freeAllDatasets(void);
 
 /* Dataset lookup and row/cursor access */
@@ -100,7 +100,7 @@ extern ConnectionStateEnum handle_cmd_reservoir_sample(CState *st, Command *cmd,
 													   pg_time_usec_t *now);
 
 /* Bulk COPY helper usable from pgbench -i or \copy_dataset */
-extern bool copyDatasetSlice(PGconn *con, PgBenchDataset *ds,
+extern bool copyDatasetSlice(PgBenchConn *con, PgBenchDataset *ds,
 							 const char *table_spec,
 							 int client_id, int num_clients);
 extern int	getNumDatasets(void);

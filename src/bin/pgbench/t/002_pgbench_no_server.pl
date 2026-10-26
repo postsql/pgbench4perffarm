@@ -936,6 +936,36 @@ pgbench(
 	[qr{^$}],
 	'pgbench comma-separated --sla specification parses multiple SLA rules');
 
+# --driver and --dialect option validation
+pgbench(
+	'--driver=invalid_driver',
+	1,
+	[qr{^$}],
+	[qr{invalid database driver "invalid_driver"}],
+	'pgbench option error: unknown --driver');
+
+pgbench(
+	'--dialect=invalid_dialect',
+	1,
+	[qr{^$}],
+	[qr{invalid dialect "invalid_dialect"}],
+	'pgbench option error: unknown --dialect');
+
+pgbench(
+	'--driver=spanner --dialect=googlesql --dump-config=-',
+	0,
+	[
+		qr{"driver": "spanner"},
+		qr{"dialect": "googlesql"}
+	],
+	[qr{^$}],
+	'pgbench accepts --driver=spanner --dialect=googlesql');
+
+pgbench(
+	'--driver=quack --dump-config=-',
+	0,
+	[qr{"driver": "quack"}],
+	[qr{^$}],
+	'pgbench accepts --driver=quack');
+
 done_testing();
-
-

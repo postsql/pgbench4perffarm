@@ -365,6 +365,36 @@ parseSlaSpec(const char *spec)
 	char	   *endp = NULL;
 	double		val;
 
+	if (spec != NULL && strchr(spec, ',') != NULL)
+	{
+		const char *p = spec;
+
+		while (*p != '\0')
+		{
+			const char *comma = strchr(p, ',');
+			size_t		len = (comma != NULL) ? (size_t) (comma - p) : strlen(p);
+			char	   *sub;
+
+			while (len > 0 && isspace((unsigned char) *p))
+			{
+				p++;
+				len--;
+			}
+			while (len > 0 && isspace((unsigned char) p[len - 1]))
+				len--;
+			if (len == 0)
+				pg_fatal("invalid --sla specification: \"%s\" (expected [scope:]<metric>(<=|>=)<val>[unit])",
+						 spec);
+			sub = pnstrdup(p, len);
+			parseSlaSpec(sub);
+			pg_free(sub);
+			if (comma == NULL)
+				break;
+			p = comma + 1;
+		}
+		return;
+	}
+
 	if (num_slas >= MAX_SLAS)
 		pg_fatal("at most %d SLA rules are allowed", MAX_SLAS);
 

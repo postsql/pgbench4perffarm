@@ -2,6 +2,8 @@
 
 This guide explains how to set up and operate a PostgreSQL Performance Farm ("perffarm") animal using **`pgbench4perffarm`** (`perffarm/`).
 
+> **Agentic Skill & Agent-Oriented Guide**: If you are an AI agent (or orchestrating subagents), read **[`doc/agent-guide-perffarm.md`](agent-guide-perffarm.md)** and **[`skills/pgbench4perffarm/SKILL.md`](../skills/pgbench4perffarm/SKILL.md)** for the state machine, command dispatch matrix, 5-point verification contract, and SQL regression query cookbook.
+
 The `perffarm/` harness provides a self-contained, configuration-driven workflow covering:
 1. **One-Time Animal Setup**:
    - Server build configuration flags and options (`CFLAGS`, `CONFIGURE_FLAGS`, `PGXS` extension/client build).

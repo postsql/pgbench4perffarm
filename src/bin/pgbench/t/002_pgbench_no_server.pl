@@ -926,6 +926,16 @@ pgbench(
 	[qr{^$}],
 	'pgbench CLI flags override --config log_db settings');
 
+pgbench(
+	"--sla=p95<=25ms,error_rate<=0% --dump-config=-",
+	0,
+	[
+		qr{"p95<=25ms"},
+		qr{"error_rate<=0%"}
+	],
+	[qr{^$}],
+	'pgbench comma-separated --sla specification parses multiple SLA rules');
+
 done_testing();
 
 

@@ -120,6 +120,15 @@ if [[ -n "$BATCH_DIR" && -d "$BATCH_DIR" ]]; then
     BATCH_NAME="$(basename "$BATCH_DIR")"
     ARCHIVE_PATH=""
 
+    if [[ -z "$BATCH_ID" ]]; then
+        if [[ -f "$BATCH_DIR/batch_manifest.json" ]]; then
+            BATCH_ID="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d.get("batch_id",""))' "$BATCH_DIR/batch_manifest.json" 2>/dev/null || true)"
+        fi
+        if [[ -z "$BATCH_ID" && "$BATCH_NAME" =~ ^batch_([0-9]+)_ ]]; then
+            BATCH_ID="${BASH_REMATCH[1]}"
+        fi
+    fi
+
     if has_target "archive" || has_target "scp"; then
         TAR_EXCLUDES=()
         if [[ "$UPLOAD_LEVEL" == "summary" ]]; then

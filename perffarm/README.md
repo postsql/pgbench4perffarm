@@ -2,7 +2,8 @@
 
 This directory contains the self-contained configuration templates, machine setup scripts, per-instance hardware/storage inventory collector, client-server network/IPC calibration tool, Metrics Database schema, and automated execution harness for running **`pgbench4perffarm`** as a PostgreSQL Performance Farm ("perffarm") animal.
 
-For the full architectural and operational reference, see **[`doc/perffarm-guide.md`](../doc/perffarm-guide.md)**.
+For the full architectural and operational reference, see **[`doc/perffarm-guide.md`](../doc/perffarm-guide.md)**.  
+For AI coding and benchmarking agents, see the **[Agent-Oriented Perffarm Guide (`doc/agent-guide-perffarm.md`)](../doc/agent-guide-perffarm.md)** and the **[Experimental Agentic Skill (`skills/pgbench4perffarm/SKILL.md`)](../skills/pgbench4perffarm/SKILL.md)**.
 
 ---
 

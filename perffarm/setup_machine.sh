@@ -88,7 +88,15 @@ done
 if [[ ! -f "$CONF_FILE" ]]; then
     if [[ "$INIT_CONFIG" == "true" || "$CONF_FILE" == "$SCRIPT_DIR/conf/animal.conf" ]]; then
         echo "[setup_machine] Initializing $CONF_FILE from conf/animal.conf.example..."
-        cp "$SCRIPT_DIR/conf/animal.conf.example" "$CONF_FILE"
+        mkdir -p "$(dirname "$CONF_FILE")"
+        {
+            [[ -n "${ANIMAL_NAME:-}" ]] && echo "ANIMAL_NAME=\"\${ANIMAL_NAME:-$ANIMAL_NAME}\""
+            [[ -n "${WORKDIR:-}" ]] && echo "WORKDIR=\"\${WORKDIR:-$WORKDIR}\""
+            [[ -n "${PGPORT:-}" ]] && echo "PGPORT=\"\${PGPORT:-$PGPORT}\""
+            [[ -n "${METRICS_DB_PORT:-}" ]] && echo "METRICS_DB_PORT=\"\${METRICS_DB_PORT:-$METRICS_DB_PORT}\""
+            [[ -n "${TOPOLOGY:-}" ]] && echo "TOPOLOGY=\"\${TOPOLOGY:-$TOPOLOGY}\""
+            cat "$SCRIPT_DIR/conf/animal.conf.example"
+        } > "$CONF_FILE"
     else
         echo "[setup_machine] ERROR: Configuration file not found: $CONF_FILE" >&2
         exit 1

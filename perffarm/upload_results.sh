@@ -237,12 +237,18 @@ pgb_runs = (
     else []
 )
 
-# Ensure remote sequences are at least at max(id) before allocating any new IDs
+# Ensure remote sequences are never behind max(id) without ever rewinding last_value backwards
 exec_remote(f"""
 SET search_path TO "{remote_schema}", public, pg_catalog;
-SELECT setval(pg_get_serial_sequence('perffarm_batches', 'batch_id'), GREATEST(COALESCE((SELECT max(batch_id) FROM perffarm_batches), 1), 1), true);
-SELECT setval(pg_get_serial_sequence('perffarm_test_runs', 'test_run_id'), GREATEST(COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 1), 1), true);
-SELECT setval(pg_get_serial_sequence('pgbench_runs', 'run_id'), GREATEST(COALESCE((SELECT max(run_id) FROM pgbench_runs), 1), 1), true);
+BEGIN;
+SELECT pg_advisory_xact_lock(73733476);
+SELECT setval(pg_get_serial_sequence('perffarm_batches', 'batch_id'), GREATEST((SELECT last_value FROM perffarm_batches_batch_id_seq), COALESCE((SELECT max(batch_id) FROM perffarm_batches), 1)), true)
+WHERE (SELECT last_value FROM perffarm_batches_batch_id_seq) < COALESCE((SELECT max(batch_id) FROM perffarm_batches), 0);
+SELECT setval(pg_get_serial_sequence('perffarm_test_runs', 'test_run_id'), GREATEST((SELECT last_value FROM perffarm_test_runs_test_run_id_seq), COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 1)), true)
+WHERE (SELECT last_value FROM perffarm_test_runs_test_run_id_seq) < COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 0);
+SELECT setval(pg_get_serial_sequence('pgbench_runs', 'run_id'), GREATEST((SELECT last_value FROM pgbench_runs_run_id_seq), COALESCE((SELECT max(run_id) FROM pgbench_runs), 1)), true)
+WHERE (SELECT last_value FROM pgbench_runs_run_id_seq) < COALESCE((SELECT max(run_id) FROM pgbench_runs), 0);
+COMMIT;
 """)
 
 # Resolve remote IDs without colliding with other animals' batches/runs on remote_conn
@@ -443,12 +449,7 @@ INSERT INTO perffarm_test_runs
 SELECT * FROM jsonb_populate_recordset(NULL::perffarm_test_runs, {jlit(test_runs)});
 """)
 
-sql_parts.append("""
-SELECT setval(pg_get_serial_sequence('perffarm_batches', 'batch_id'), COALESCE((SELECT max(batch_id) FROM perffarm_batches), 1), true);
-SELECT setval(pg_get_serial_sequence('perffarm_test_runs', 'test_run_id'), COALESCE((SELECT max(test_run_id) FROM perffarm_test_runs), 1), true);
-SELECT setval(pg_get_serial_sequence('pgbench_runs', 'run_id'), COALESCE((SELECT max(run_id) FROM pgbench_runs), 1), true);
-COMMIT;
-""")
+sql_parts.append("COMMIT;")
 
 exec_remote("\n".join(sql_parts))
 PY

@@ -1019,7 +1019,12 @@ SELECT
     (t.pg_stat_wal_delta ->> 'wal_bytes')::bigint AS wal_bytes_generated,
     round((t.os_metrics #>> '{cpu_utilization_pct,busy_pct}')::numeric, 1) AS server_cpu_busy_pct,
     t.started_at,
-    t.ended_at
+    t.ended_at,
+    COALESCE((t.verification_details ->> 'sequence_run_index')::int, 1) AS run_seq_idx,
+    COALESCE((t.verification_details ->> 'sequence_total_runs')::int, 1) AS run_seq_total,
+    COALESCE((t.verification_details ->> 'target_duration_sec')::int, round(COALESCE(r.duration_sec, t.duration_sec))::int) AS target_duration_sec,
+    COALESCE((t.verification_details ->> 'prepared_db_reused')::boolean, false) AS prepared_db_reused,
+    r.run_label
 FROM perffarm_test_runs t
 JOIN perffarm_batches b ON b.batch_id = t.batch_id
 JOIN perffarm_animals a ON a.animal_name = b.animal_name
@@ -1036,6 +1041,10 @@ WITH ordered_runs AS (
         s.suite_name,
         s.batch_id,
         s.test_run_id,
+        s.run_seq_idx,
+        s.run_seq_total,
+        s.target_duration_sec,
+        s.run_label,
         s.git_commit_sha,
         s.commit_short,
         s.git_commit_ts,
@@ -1051,7 +1060,7 @@ WITH ordered_runs AS (
     FROM perffarm_commit_summary_v s
     WHERE s.verification_status IN ('PASSED', 'FAILED')
     WINDOW w AS (
-        PARTITION BY s.animal_name, s.pg_branch, s.test_profile, s.test_name, round(s.duration_sec, -1)
+        PARTITION BY s.animal_name, s.pg_branch, s.test_profile, s.test_name, s.run_seq_idx, s.target_duration_sec
         ORDER BY COALESCE(s.git_commit_ts, s.started_at) ASC, s.batch_id ASC, s.test_run_id ASC
     )
 )
@@ -1080,9 +1089,12 @@ SELECT
         WHEN prev_latency_p95_ms > 0 AND ((latency_p95_ms - prev_latency_p95_ms) / prev_latency_p95_ms * 100.0) > 10.0 THEN 'REGRESSED'
         WHEN prev_tps > 0 AND ((tps - prev_tps) / prev_tps * 100.0) > 5.0 THEN 'IMPROVED'
         ELSE 'STABLE'
-    END AS verdict
+    END AS verdict,
+    run_seq_idx,
+    target_duration_sec,
+    run_label
 FROM ordered_runs
-ORDER BY batch_id DESC, test_name ASC;
+ORDER BY batch_id DESC, test_name ASC, run_seq_idx ASC;
 
 DROP FUNCTION IF EXISTS perffarm_compare_commits(text, text, text);
 CREATE OR REPLACE FUNCTION perffarm_compare_commits(
@@ -1104,30 +1116,34 @@ RETURNS TABLE (
     verdict      text
 ) LANGUAGE sql STABLE AS $func$
 WITH latest_a AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name)
+    SELECT DISTINCT ON (s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec)
         s.*
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_a || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
       AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.batch_id DESC, s.test_run_id DESC
+    ORDER BY s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec, s.batch_id DESC, s.test_run_id DESC
 ),
 latest_b AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name)
+    SELECT DISTINCT ON (s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec)
         s.*
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_b || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
       AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.batch_id DESC, s.test_run_id DESC
+    ORDER BY s.animal_name, s.test_name, s.run_seq_idx, s.target_duration_sec, s.batch_id DESC, s.test_run_id DESC
 ),
 paired AS (
     SELECT
         a.animal_name,
-        a.test_name,
+        CASE WHEN GREATEST(a.run_seq_total, b.run_seq_total) > 1
+             THEN a.test_name || ' [r' || a.run_seq_idx || ' ' || a.target_duration_sec || 's]'
+             ELSE a.test_name
+        END AS test_name,
         a.suite_name,
+        a.run_seq_idx,
         m.ord,
         m.metric,
         m.unit,
@@ -1138,6 +1154,8 @@ paired AS (
     JOIN latest_b b
       ON b.animal_name = a.animal_name
      AND b.test_name = a.test_name
+     AND b.run_seq_idx = a.run_seq_idx
+     AND b.target_duration_sec = a.target_duration_sec
     CROSS JOIN LATERAL (
         VALUES
             (1, 'tps',                  'tx/s', true,  a.tps::float8,                  b.tps::float8),
@@ -1173,5 +1191,5 @@ SELECT
         ELSE 'UNCHANGED'
     END AS verdict
 FROM paired p
-ORDER BY p.animal_name, p.test_name, p.ord;
+ORDER BY p.animal_name, p.run_seq_idx, p.test_name, p.ord;
 $func$;

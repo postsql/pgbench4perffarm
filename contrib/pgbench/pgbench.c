@@ -14,11 +14,18 @@
  */
 #include "postgres.h"
 
+#include <errno.h>
 #include <math.h>
 
 #include "access/htup_details.h"
 #include "catalog/pg_type.h"
+#if defined(__has_include) && __has_include("common/int.h")
 #include "common/int.h"
+#else
+#define pg_add_s64_overflow(a, b, r) __builtin_add_overflow((a), (b), (r))
+#define pg_sub_s64_overflow(a, b, r) __builtin_sub_overflow((a), (b), (r))
+#define pg_mul_s64_overflow(a, b, r) __builtin_mul_overflow((a), (b), (r))
+#endif
 #include "common/pgbench_funcs.h"
 #include "fmgr.h"
 #include "funcapi.h"
@@ -28,6 +35,11 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/timestamp.h"
+
+#if !(defined(HAVE_CONSTRUCT_ARRAY_BUILTIN) ? HAVE_CONSTRUCT_ARRAY_BUILTIN : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 160000))
+#define construct_array_builtin(elems, nelems, elmtype) \
+	construct_array((elems), (nelems), (elmtype), sizeof(int64), true, 'd')
+#endif
 
 PG_MODULE_MAGIC;
 
@@ -971,9 +983,9 @@ pgbench_vector_distance_text(PG_FUNCTION_ARGS)
 	PG_RETURN_FLOAT8(dist);
 }
 
-PG_FUNCTION_INFO_V1(pgbench_ldbc_correlated_edge_sql);
+PG_FUNCTION_INFO_V1(pgbench_community_correlated_edge_sql);
 Datum
-pgbench_ldbc_correlated_edge_sql(PG_FUNCTION_ARGS)
+pgbench_community_correlated_edge_sql(PG_FUNCTION_ARGS)
 {
 	int64		src_id = PG_GETARG_INT64(0);
 	int64		num_vertices = PG_GETARG_INT64(1);
@@ -984,7 +996,7 @@ pgbench_ldbc_correlated_edge_sql(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	if (!pgbench_ldbc_correlated_edge(&pgbench_prng_state,
+	if (!pgbench_community_correlated_edge(&pgbench_prng_state,
 									  src_id,
 									  num_vertices,
 									  num_communities,
@@ -993,7 +1005,7 @@ pgbench_ldbc_correlated_edge_sql(PG_FUNCTION_ARGS)
 									  &dst))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid ldbc_correlated_edge parameters (num_vertices=%lld, num_communities=%lld, homophily_prob=%g)",
+				 errmsg("invalid community_correlated_edge parameters (num_vertices=%lld, num_communities=%lld, homophily_prob=%g)",
 						(long long) num_vertices,
 						(long long) num_communities,
 						homophily_prob)));
@@ -1001,9 +1013,9 @@ pgbench_ldbc_correlated_edge_sql(PG_FUNCTION_ARGS)
 	PG_RETURN_INT64(dst);
 }
 
-PG_FUNCTION_INFO_V1(pgbench_ldbc_flashmob_ts_sql);
+PG_FUNCTION_INFO_V1(pgbench_burst_timestamp_sql);
 Datum
-pgbench_ldbc_flashmob_ts_sql(PG_FUNCTION_ARGS)
+pgbench_burst_timestamp_sql(PG_FUNCTION_ARGS)
 {
 	int64		base_ts_us = PG_GETARG_INT64(0);
 	int64		span_us = PG_GETARG_INT64(1);
@@ -1014,7 +1026,7 @@ pgbench_ldbc_flashmob_ts_sql(PG_FUNCTION_ARGS)
 
 	initialize_prng();
 
-	if (!pgbench_ldbc_flashmob_ts(&pgbench_prng_state,
+	if (!pgbench_burst_timestamp(&pgbench_prng_state,
 								  base_ts_us,
 								  span_us,
 								  num_spikes,
@@ -1023,7 +1035,7 @@ pgbench_ldbc_flashmob_ts_sql(PG_FUNCTION_ARGS)
 								  &ts))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid ldbc_flashmob_ts parameters (span_us=%lld, num_spikes=%lld, spike_prob=%g)",
+				 errmsg("invalid burst_timestamp parameters (span_us=%lld, num_spikes=%lld, spike_prob=%g)",
 						(long long) span_us,
 						(long long) num_spikes,
 						spike_prob)));

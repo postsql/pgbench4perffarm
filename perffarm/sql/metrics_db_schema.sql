@@ -1096,6 +1096,41 @@ SELECT
 FROM ordered_runs
 ORDER BY batch_id DESC, test_name ASC, run_seq_idx ASC;
 
+-- -----------------------------------------------------------------------------
+-- Canonical Test Name Normalizer (Supports Legacy Aliases Across Perffarm)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION perffarm_canonical_test_name(p_test text)
+RETURNS text LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
+SELECT CASE p_test
+    WHEN 'pgbench-b' THEN 'pgbench-banking'
+    WHEN 'pgbench-c' THEN 'pgbench-order'
+    WHEN 'pgbench-e' THEN 'pgbench-brokerage'
+    WHEN 'pgbench-h' THEN 'pgbench-analytics'
+    WHEN 'pgbench-ds' THEN 'pgbench-retail'
+    WHEN 'pgbench-graph-lsqb' THEN 'pgbench-graph-subgraph'
+    WHEN 'pgbench-graph-snb-interactive' THEN 'pgbench-graph-social-interactive'
+    WHEN 'pgbench-graph-snb-bi' THEN 'pgbench-graph-social-bi'
+    WHEN 'pgbench-graph-finbench' THEN 'pgbench-graph-financial'
+    WHEN 'pgbench-graph-graphalytics' THEN 'pgbench-graph-algorithms'
+    WHEN 'pgbench-graph-sql-ud-lsqb' THEN 'pgbench-graph-sql-ud-subgraph'
+    WHEN 'pgbench-graph-sql-ud-snb-interactive' THEN 'pgbench-graph-sql-ud-social-interactive'
+    WHEN 'pgbench-graph-sql-ud-snb-bi' THEN 'pgbench-graph-sql-ud-social-bi'
+    WHEN 'pgbench-graph-sql-ud-finbench' THEN 'pgbench-graph-sql-ud-financial'
+    WHEN 'pgbench-graph-sql-ud-graphalytics' THEN 'pgbench-graph-sql-ud-algorithms'
+    WHEN 'pgbench-graph-pgq-lsqb' THEN 'pgbench-graph-pgq-subgraph'
+    WHEN 'pgbench-graph-pgq-snb-interactive' THEN 'pgbench-graph-pgq-social-interactive'
+    WHEN 'pgbench-graph-pgq-snb-bi' THEN 'pgbench-graph-pgq-social-bi'
+    WHEN 'pgbench-graph-pgq-finbench' THEN 'pgbench-graph-pgq-financial'
+    WHEN 'pgbench-graph-pgq-graphalytics' THEN 'pgbench-graph-pgq-algorithms'
+    WHEN 'pgbench-graph-plpgq-lsqb' THEN 'pgbench-graph-plpgq-subgraph'
+    WHEN 'pgbench-graph-plpgq-snb-interactive' THEN 'pgbench-graph-plpgq-social-interactive'
+    WHEN 'pgbench-graph-plpgq-snb-bi' THEN 'pgbench-graph-plpgq-social-bi'
+    WHEN 'pgbench-graph-plpgq-finbench' THEN 'pgbench-graph-plpgq-financial'
+    WHEN 'pgbench-graph-plpgq-graphalytics' THEN 'pgbench-graph-plpgq-algorithms'
+    ELSE p_test
+END;
+$$;
+
 DROP FUNCTION IF EXISTS perffarm_compare_commits(text, text, text);
 CREATE OR REPLACE FUNCTION perffarm_compare_commits(
     p_sha_a text,
@@ -1116,19 +1151,20 @@ RETURNS TABLE (
     verdict      text
 ) LANGUAGE sql STABLE AS $func$
 WITH latest_batch_a AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name)
+    SELECT DISTINCT ON (s.animal_name, perffarm_canonical_test_name(s.test_name))
         s.animal_name,
         s.test_name,
+        perffarm_canonical_test_name(s.test_name) AS canon_test_name,
         s.batch_id
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_a || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
-      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
+      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter OR perffarm_canonical_test_name(s.test_name) = perffarm_canonical_test_name(p_suite_filter))
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.batch_id DESC
+    ORDER BY s.animal_name, perffarm_canonical_test_name(s.test_name), s.batch_id DESC
 ),
 latest_a AS (
-    SELECT s.*
+    SELECT s.*, lb.canon_test_name
     FROM perffarm_commit_summary_v s
     JOIN latest_batch_a lb
       ON lb.animal_name = s.animal_name
@@ -1137,19 +1173,20 @@ latest_a AS (
     WHERE s.tps IS NOT NULL
 ),
 latest_batch_b AS (
-    SELECT DISTINCT ON (s.animal_name, s.test_name)
+    SELECT DISTINCT ON (s.animal_name, perffarm_canonical_test_name(s.test_name))
         s.animal_name,
         s.test_name,
+        perffarm_canonical_test_name(s.test_name) AS canon_test_name,
         s.batch_id
     FROM perffarm_commit_summary_v s
     WHERE s.git_commit_sha LIKE (p_sha_b || '%')
       AND (p_animal IS NULL OR s.animal_name = p_animal)
-      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter)
+      AND (p_suite_filter IS NULL OR s.suite_name = p_suite_filter OR s.test_name = p_suite_filter OR perffarm_canonical_test_name(s.test_name) = perffarm_canonical_test_name(p_suite_filter))
       AND s.tps IS NOT NULL
-    ORDER BY s.animal_name, s.test_name, s.batch_id DESC
+    ORDER BY s.animal_name, perffarm_canonical_test_name(s.test_name), s.batch_id DESC
 ),
 latest_b AS (
-    SELECT s.*
+    SELECT s.*, lb.canon_test_name
     FROM perffarm_commit_summary_v s
     JOIN latest_batch_b lb
       ON lb.animal_name = s.animal_name
@@ -1161,8 +1198,8 @@ paired AS (
     SELECT
         a.animal_name,
         CASE WHEN GREATEST(a.run_seq_total, b.run_seq_total) > 1
-             THEN a.test_name || ' [r' || a.run_seq_idx || ' ' || a.target_duration_sec || 's]'
-             ELSE a.test_name
+             THEN a.canon_test_name || ' [r' || a.run_seq_idx || ' ' || a.target_duration_sec || 's]'
+             ELSE a.canon_test_name
         END AS test_name,
         a.suite_name,
         a.run_seq_idx,
@@ -1175,7 +1212,7 @@ paired AS (
     FROM latest_a a
     JOIN latest_b b
       ON b.animal_name = a.animal_name
-     AND b.test_name = a.test_name
+     AND b.canon_test_name = a.canon_test_name
      AND b.run_seq_idx = a.run_seq_idx
      AND b.target_duration_sec = a.target_duration_sec
     CROSS JOIN LATERAL (

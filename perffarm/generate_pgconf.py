@@ -316,6 +316,41 @@ def main() -> int:
     for token, val in replacements.items():
         content = content.replace(token, val)
 
+    # Filter out any built-in GUC not supported by the exact target postgres binary
+    supported_gucs: set[str] = set()
+    if args.pg_config:
+        import shutil
+        import subprocess
+        pg_cfg_bin = shutil.which(args.pg_config)
+        if pg_cfg_bin:
+            try:
+                bindir = subprocess.check_output([pg_cfg_bin, "--bindir"], text=True).strip()
+                pg_bin = os.path.join(bindir, "postgres")
+                if os.path.exists(pg_bin):
+                    desc_out = subprocess.check_output(
+                        [pg_bin, "--describe-config"],
+                        stderr=subprocess.DEVNULL,
+                        text=True,
+                    )
+                    for dline in desc_out.splitlines():
+                        gname = dline.split("\t", 1)[0].strip()
+                        if gname:
+                            supported_gucs.add(gname)
+            except Exception:
+                pass
+
+    if supported_gucs:
+        filtered_lines = []
+        for raw_line in content.splitlines():
+            sline = raw_line.strip()
+            if sline and not sline.startswith("#") and "=" in sline:
+                gkey = sline.split("=", 1)[0].strip()
+                if "." not in gkey and gkey not in supported_gucs:
+                    filtered_lines.append(f"# {raw_line}  # unsupported on this server revision")
+                    continue
+            filtered_lines.append(raw_line)
+        content = "\n".join(filtered_lines) + "\n"
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:

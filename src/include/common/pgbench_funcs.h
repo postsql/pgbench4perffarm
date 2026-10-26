@@ -14,9 +14,9 @@
 #ifndef PGBENCH_FUNCS_H
 #define PGBENCH_FUNCS_H
 
-#if !defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 150000
+#if defined(__has_include) && __has_include("common/pg_prng.h")
 #include "common/pg_prng.h"
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 160000
+#if !(defined(HAVE_PRNG_NORMAL) ? HAVE_PRNG_NORMAL : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 160000))
 extern double pg_prng_double_normal(pg_prng_state *state);
 #endif
 #else
@@ -29,16 +29,22 @@ typedef struct pg_prng_state
 extern void pg_prng_seed(pg_prng_state *state, uint64 seed);
 extern void pg_prng_fseed(pg_prng_state *state, double fseed);
 extern bool pg_prng_seed_check(pg_prng_state *state);
+#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 110000
+#define pg_prng_strong_seed(state) (false)
+#else
 #define pg_prng_strong_seed(state) \
 	(pg_strong_random(state, sizeof(pg_prng_state)) ? \
 	 pg_prng_seed_check(state) : false)
+#endif
 extern uint64 pg_prng_uint64(pg_prng_state *state);
 extern uint64 pg_prng_uint64_range(pg_prng_state *state, uint64 rmin, uint64 rmax);
 extern double pg_prng_double(pg_prng_state *state);
 extern double pg_prng_double_normal(pg_prng_state *state);
 
 #ifdef FRONTEND
+#if defined(__has_include) && __has_include("common/logging.h")
 #include "common/logging.h"
+#endif
 #ifndef pg_fatal
 #define pg_fatal(...) do { pg_log_fatal(__VA_ARGS__); exit(1); } while(0)
 #endif
@@ -137,14 +143,14 @@ extern size_t pgbench_format_vector(const float *vec, int dim,
 									char *buf, size_t buflen);
 extern bool pgbench_parse_vector_count(const char *str, int *dim_out);
 extern bool pgbench_parse_vector_into(const char *str, float *out, int expected_dim);
-extern bool pgbench_ldbc_correlated_edge(pg_prng_state *state,
+extern bool pgbench_community_correlated_edge(pg_prng_state *state,
 										 int64 src_id,
 										 int64 num_vertices,
 										 int64 num_communities,
 										 double homophily_prob,
 										 int64 seed,
 										 int64 *dst_out);
-extern bool pgbench_ldbc_flashmob_ts(pg_prng_state *state,
+extern bool pgbench_burst_timestamp(pg_prng_state *state,
 									 int64 base_ts_us,
 									 int64 span_us,
 									 int64 num_spikes,

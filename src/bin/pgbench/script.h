@@ -186,6 +186,7 @@ extern bool computeRecallOrNdcgAtK(const PgBenchValue *ret_val,
 								   double *out_score);
 extern int	chooseScript(pg_prng_state *random_state);
 
+extern void coalesce_spanner_ddl_commands(Command **commands);
 extern void postprocess_sql_command(Command *my_command);
 extern void process_file(const char *filename, int weight);
 extern void process_builtin(const BuiltinScript *bi, int weight);

@@ -1,6 +1,18 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark designed
+ * for database performance research and regression testing. While modeled
+ * after graph traversal patterns published by the Graph Data Council (LDBC),
+ * this is NOT an LDBC Benchmark, is NOT an implementation of an LDBC Benchmark,
+ * and these results are NOT LDBC Benchmark Results.
+ * LDBC, LDBC Benchmark, and LDBC Benchmark Results are registered trademarks
+ * of the Graph Data Council. Distributed under CC-BY 4.0 attribution terms.
+ */
+
 --
--- pgbench-graph-pgq: 1-Hop Neighborhood & Recent Messages Query (LDBC IS-3 / IC-2 style)
--- Uses ISO SQL/PGQ GRAPH_TABLE pattern matching over snb_graph.
+-- pgbench-graph-pgq: 1-Hop Neighborhood & Recent Messages Query (1-Hop Neighborhood style)
+-- Uses ISO SQL/PGQ GRAPH_TABLE pattern matching over social_graph.
 --
 
 \if reservoir_count('persons') >= 0
@@ -15,7 +27,7 @@ SELECT g.friend_id,
        g.weight,
        m.msg_id,
        m.created_ts
-  FROM GRAPH_TABLE (snb_graph
+  FROM GRAPH_TABLE (social_graph
       MATCH (src IS Person WHERE src.id = :person_id)-[k IS knows]->(friend IS Person)
       COLUMNS (
           friend.id AS friend_id,
@@ -26,7 +38,7 @@ SELECT g.friend_id,
   ) g
   LEFT JOIN LATERAL (
       SELECT gm.msg_id, gm.created_ts
-        FROM GRAPH_TABLE (snb_graph
+        FROM GRAPH_TABLE (social_graph
             MATCH (msg IS Message)-[IS hasCreator]->(author IS Person WHERE author.id = g.friend_id)
             COLUMNS (
                 msg.id AS msg_id,

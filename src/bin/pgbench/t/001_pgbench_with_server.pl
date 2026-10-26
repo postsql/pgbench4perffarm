@@ -2119,7 +2119,7 @@ $node->pgbench(
 	],
 	'pgbench heterogeneous client groups and sequential streams');
 
-# Test latency percentiles, SLA pass/fail validation, composite metrics (tpmC, QphH), and JSON report export
+# Test latency percentiles, SLA pass/fail validation, composite metrics (nopm, qph), and JSON report export
 my $tpcc_no = $node->basedir . '/001_pgbench_tpcc_new_order.sql';
 my $json_out = $node->basedir . '/001_pgbench_report.json';
 append_to_file($tpcc_no, "SELECT 1;\n");
@@ -2130,21 +2130,21 @@ $node->pgbench(
 	[
 		qr{processed: 4/4},
 		qr{latency percentiles: p50 = \d+\.\d+ ms, p90 = \d+\.\d+ ms, p95 = \d+\.\d+ ms, p99 = \d+\.\d+ ms, p99\.9 = \d+\.\d+ ms},
-		qr{tpmC = \d+\.\d+ \(New-Order transactions: 2\)},
-		qr{QphH\@SF1 = \d+\.\d+ \(queries: 2\)},
+		qr{nopm = \d+\.\d+ \(New-Order transactions: 2\)},
+		qr{qph\@SF1 = \d+\.\d+ \(queries: 2\)},
 		qr{SLA new_order:p90 <= 10000\.000 ms: actual = \d+\.\d+ ms \[PASS\]},
 		qr{SLA olap:p95 <= 10000\.000 ms: actual = \d+\.\d+ ms \[PASS\]},
 	],
 	[
 		qr{text 'olap:0:s1'},
 	],
-	'pgbench percentiles, SLA pass, tpmC, QphH, and json-report');
+	'pgbench percentiles, SLA pass, nopm, qph, and json-report');
 
 ok(-f $json_out, 'JSON report file was created');
 my $json_content = slurp_file($json_out);
 like($json_content, qr/"sla_all_passed": true/, 'JSON report indicates sla_all_passed: true');
-like($json_content, qr/"tpmC": \d+\.\d+/, 'JSON report contains tpmC');
-like($json_content, qr/"QphH": \d+\.\d+/, 'JSON report contains QphH');
+like($json_content, qr/"nopm": \d+\.\d+/, 'JSON report contains nopm');
+like($json_content, qr/"qph": \d+\.\d+/, 'JSON report contains qph');
 
 # Test SLA failure returns exit code 1
 $node->pgbench(
@@ -2680,20 +2680,20 @@ SELECT octet_length(:b::bytea) BETWEEN 8 AND 16,
 }
 	});
 
-# Test Phase 1 LDBC Engine & Generator Extensions:
-# 1) ldbc_correlated_edge & ldbc_flashmob_ts
+# Test Phase 1 Graph Engine & Generator Extensions:
+# 1) community_correlated_edge & burst_timestamp
 # 2) \begin_dependent_write / \end_dependent_write multi-writer min-watermark gatekeeper
 # 3) --dataset :header flag and \dataset_bind partitioned / sample cursor modes
 # 4) \reservoir_push with PGBT_ARRAY (from \gset_col)
 # 5) \phase_barrier across multiple clients
 # 6) \validate_result and --sla validation_failures / validation_pct
-my $ldbc_hdr_csv = $node->basedir . '/001_ldbc_header.csv';
-append_to_file($ldbc_hdr_csv, "personId|firstName\n101|Alice\n102|Bob\n103|Carol\n104|Dave\n");
+my $graph_hdr_csv = $node->basedir . '/001_graph_header.csv';
+append_to_file($graph_hdr_csv, "personId|firstName\n101|Alice\n102|Bob\n103|Carol\n104|Dave\n");
 
-my $ldbc_val_json = $node->basedir . '/001_ldbc_validation.json';
+my $graph_val_json = $node->basedir . '/001_graph_validation.json';
 $node->pgbench(
-	"-n -c 2 -j 2 -t 2 --dataset=ldbc_p:$ldbc_hdr_csv:pipe:header --reservoir=ldbc_res:64 "
-	  . "--sla validation_failures<=0 --sla validation_pct>=100.0 --json-report=$ldbc_val_json",
+	"-n -c 2 -j 2 -t 2 --dataset=graph_p:$graph_hdr_csv:pipe:header --reservoir=graph_res:64 "
+	  . "--sla validation_failures<=0 --sla validation_pct>=100.0 --json-report=$graph_val_json",
 	0,
 	[
 		qr{processed: 4/4},
@@ -2702,29 +2702,29 @@ $node->pgbench(
 		qr{SLA total:validation_pct >= 100\.00%: actual = 100\.00% \[PASS\]},
 	],
 	[
-		qr{loaded dataset "ldbc_p".*4 rows},
+		qr{loaded dataset "graph_p".*4 rows},
 	],
-	'pgbench Phase 1 LDBC generators, dataset :header/partitioned/sample, array reservoir_push, phase_barrier, and validate_result',
+	'pgbench Phase 1 graph generators, dataset :header/partitioned/sample, array reservoir_push, phase_barrier, and validate_result',
 	{
-		'001_pgbench_ldbc_phase1' => q{
-\set dst ldbc_correlated_edge(10, 100, 5, 1.0, 42)
-\set fts ldbc_flashmob_ts(1000000, 500000, 4, 0.8, 42)
+		'001_pgbench_graph_phase1' => q{
+\set dst community_correlated_edge(10, 100, 5, 1.0, 42)
+\set fts burst_timestamp(1000000, 500000, 4, 0.8, 42)
 \validate_result (:dst >= 1 and :dst <= 100 and :dst != 10 and (:dst % 5) = 0) true
 \validate_result (:fts >= 1000000 and :fts <= 1500000) true
-\dataset_bind ldbc_p partitioned pid pname
-\dataset_bind ldbc_p sample spid spname
+\dataset_bind graph_p partitioned pid pname
+\dataset_bind graph_p sample spid spname
 SELECT g FROM generate_series(1001, 1003) g \gset_col discovered_ids
-\reservoir_push ldbc_res :discovered_ids
+\reservoir_push graph_res :discovered_ids
 \phase_barrier
-\reservoir_sample ldbc_res sampled_id 0
+\reservoir_sample graph_res sampled_id 0
 SELECT (:pid >= 101 AND :pid <= 104) AND (:spid >= 101 AND :spid <= 104) AND (:sampled_id >= 1001 AND :sampled_id <= 1003) AS ok \gset
 \validate_result :ok true
 }
 	});
 
-my $ldbc_val_json_content = slurp_file($ldbc_val_json);
-like($ldbc_val_json_content, qr/"validation_passed": 12/, 'JSON report contains validation_passed: 12');
-like($ldbc_val_json_content, qr/"validation_failed": 0/, 'JSON report contains validation_failed: 0');
+my $graph_val_json_content = slurp_file($graph_val_json);
+like($graph_val_json_content, qr/"validation_passed": 12/, 'JSON report contains validation_passed: 12');
+like($graph_val_json_content, qr/"validation_failed": 0/, 'JSON report contains validation_failed: 0');
 
 # Test multi-writer min-watermark gatekeeper (\begin_dependent_write / \end_dependent_write)
 # Out-of-order completion: writer A starts at t=100, writer B starts at t=200 and finishes at t=200
@@ -2754,49 +2754,49 @@ SELECT 1;
 }
 	});
 
-# Test standard benchmark workload suites (pgbench-b, pgbench-c, pgbench-e, pgbench-h, pgbench-ds, pgbench-htap, pgbench-vec, pgbench-graph)
+# Test standard benchmark workload suites (pgbench-banking, pgbench-order, pgbench-brokerage, pgbench-analytics, pgbench-retail, pgbench-htap, pgbench-vec, pgbench-graph)
 my $wl_dir = "$FindBin::RealBin/../workloads";
 
-for my $db (qw(wl_pgbench_b wl_pgbench_c wl_pgbench_e wl_pgbench_h wl_pgbench_ds wl_pgbench_htap wl_pgbench_vec wl_pgbench_graph))
+for my $db (qw(wl_pgbench_banking wl_pgbench_order wl_pgbench_brokerage wl_pgbench_analytics wl_pgbench_retail wl_pgbench_htap wl_pgbench_vec wl_pgbench_graph))
 {
 	$node->safe_psql('postgres', "CREATE DATABASE $db;");
 }
 
-# 0. pgbench-b parallel initialization and workload execution
+# 0. pgbench-banking parallel initialization and workload execution
 $node->pgbench(
-	"-n -d wl_pgbench_b -t 1 -f $wl_dir/pgbench-b/pgbench_b_schema.sql",
+	"-n -d wl_pgbench_banking -t 1 -f $wl_dir/pgbench-banking/pgbench_banking_schema.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-b schema creation');
+	'pgbench-banking schema creation');
 
 $node->pgbench(
-	"-n -d wl_pgbench_b -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-b/pgbench_b_init.sql",
+	"-n -d wl_pgbench_banking -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-banking/pgbench_banking_init.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-b parallel in-database initialization');
+	'pgbench-banking parallel in-database initialization');
 
 $node->pgbench(
-	"-n -d wl_pgbench_b -t 1 -f $wl_dir/pgbench-b/pgbench_b_constraints.sql",
+	"-n -d wl_pgbench_banking -t 1 -f $wl_dir/pgbench-banking/pgbench_banking_constraints.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-b post-load constraints');
+	'pgbench-banking post-load constraints');
 
-is($node->safe_psql('wl_pgbench_b', 'SELECT count(*) FROM pgbench_branches;'), '2', 'pgbench-b branches count');
-is($node->safe_psql('wl_pgbench_b', 'SELECT count(*) FROM pgbench_tellers;'), '20', 'pgbench-b tellers count');
-is($node->safe_psql('wl_pgbench_b', 'SELECT count(*) FROM pgbench_accounts;'), '200000', 'pgbench-b accounts count');
+is($node->safe_psql('wl_pgbench_banking', 'SELECT count(*) FROM pgbench_branches;'), '2', 'pgbench-banking branches count');
+is($node->safe_psql('wl_pgbench_banking', 'SELECT count(*) FROM pgbench_tellers;'), '20', 'pgbench-banking tellers count');
+is($node->safe_psql('wl_pgbench_banking', 'SELECT count(*) FROM pgbench_accounts;'), '200000', 'pgbench-banking accounts count');
 
 my $b_json = $node->basedir . '/001_pgbench_b_report.json';
 $node->pgbench(
-	"-n -d wl_pgbench_b -c 2 -j 2 -t 5 -s 2 "
-	  . "-f $wl_dir/pgbench-b/pgbench_b_tx.sql\@70 "
-	  . "-f $wl_dir/pgbench-b/pgbench_b_simple_update.sql\@20 "
-	  . "-f $wl_dir/pgbench-b/pgbench_b_select_only.sql\@10 "
+	"-n -d wl_pgbench_banking -c 2 -j 2 -t 5 -s 2 "
+	  . "-f $wl_dir/pgbench-banking/pgbench_banking_tx.sql\@70 "
+	  . "-f $wl_dir/pgbench-banking/pgbench_banking_simple_update.sql\@20 "
+	  . "-f $wl_dir/pgbench-banking/pgbench_banking_select_only.sql\@10 "
 	  . "--sla total:p95<=60s --json-report=$b_json",
 	0,
 	[
@@ -2805,45 +2805,45 @@ $node->pgbench(
 		qr{SLA total:p95 <= 60000\.000 ms: actual = \d+\.\d+ ms \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-b workload suite execution');
+	'pgbench-banking workload suite execution');
 
-# 1. pgbench-c parallel initialization and workload execution
+# 1. pgbench-order parallel initialization and workload execution
 $node->pgbench(
-	"-n -d wl_pgbench_c -t 1 -f $wl_dir/pgbench-c/pgbench_c_schema.sql",
+	"-n -d wl_pgbench_order -t 1 -f $wl_dir/pgbench-order/pgbench_order_schema.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-c schema creation');
+	'pgbench-order schema creation');
 
 $node->pgbench(
-	"-n -d wl_pgbench_c -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-c/pgbench_c_init.sql",
+	"-n -d wl_pgbench_order -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-order/pgbench_order_init.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-c parallel in-database initialization');
+	'pgbench-order parallel in-database initialization');
 
 $node->pgbench(
-	"-n -d wl_pgbench_c -t 1 -f $wl_dir/pgbench-c/pgbench_c_constraints.sql",
+	"-n -d wl_pgbench_order -t 1 -f $wl_dir/pgbench-order/pgbench_order_constraints.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-c post-load constraints');
+	'pgbench-order post-load constraints');
 
-is($node->safe_psql('wl_pgbench_c', 'SELECT count(*) FROM warehouse;'), '2', 'pgbench-c warehouse count');
-is($node->safe_psql('wl_pgbench_c', 'SELECT count(*) FROM district;'), '20', 'pgbench-c district count');
-is($node->safe_psql('wl_pgbench_c', 'SELECT count(*) FROM item;'), '1000', 'pgbench-c item count');
+is($node->safe_psql('wl_pgbench_order', 'SELECT count(*) FROM warehouse;'), '2', 'pgbench-order warehouse count');
+is($node->safe_psql('wl_pgbench_order', 'SELECT count(*) FROM district;'), '20', 'pgbench-order district count');
+is($node->safe_psql('wl_pgbench_order', 'SELECT count(*) FROM item;'), '1000', 'pgbench-order item count');
 
 my $c_json = $node->basedir . '/001_pgbench_c_report.json';
 $node->pgbench(
-	"-n -d wl_pgbench_c -c 2 -j 2 -t 5 -s 2 "
-	  . "-f $wl_dir/pgbench-c/pgbench_c_new_order.sql\@45 "
-	  . "-f $wl_dir/pgbench-c/pgbench_c_payment.sql\@43 "
-	  . "-f $wl_dir/pgbench-c/pgbench_c_order_status.sql\@4 "
-	  . "-f $wl_dir/pgbench-c/pgbench_c_delivery.sql\@4 "
-	  . "-f $wl_dir/pgbench-c/pgbench_c_stock_level.sql\@4 "
+	"-n -d wl_pgbench_order -c 2 -j 2 -t 5 -s 2 "
+	  . "-f $wl_dir/pgbench-order/pgbench_order_new_order.sql\@45 "
+	  . "-f $wl_dir/pgbench-order/pgbench_order_payment.sql\@43 "
+	  . "-f $wl_dir/pgbench-order/pgbench_order_order_status.sql\@4 "
+	  . "-f $wl_dir/pgbench-order/pgbench_order_delivery.sql\@4 "
+	  . "-f $wl_dir/pgbench-order/pgbench_order_stock_level.sql\@4 "
 	  . "--sla total:p95<=60s --json-report=$c_json",
 	0,
 	[
@@ -2852,136 +2852,136 @@ $node->pgbench(
 		qr{SLA total:p95 <= 60000\.000 ms: actual = \d+\.\d+ ms \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-c workload suite execution');
+	'pgbench-order workload suite execution');
 
-# 2. pgbench-e parallel initialization and workload execution
+# 2. pgbench-brokerage parallel initialization and workload execution
 $node->pgbench(
-	"-n -d wl_pgbench_e -t 1 -f $wl_dir/pgbench-e/pgbench_e_schema.sql",
+	"-n -d wl_pgbench_brokerage -t 1 -f $wl_dir/pgbench-brokerage/pgbench_brokerage_schema.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-e schema creation');
+	'pgbench-brokerage schema creation');
 
 $node->pgbench(
-	"-n -d wl_pgbench_e -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-e/pgbench_e_init.sql",
+	"-n -d wl_pgbench_brokerage -c 2 -j 2 -t 1 -s 2 -D num_workers=2 -f $wl_dir/pgbench-brokerage/pgbench_brokerage_init.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-e parallel in-database initialization');
+	'pgbench-brokerage parallel in-database initialization');
 
 $node->pgbench(
-	"-n -d wl_pgbench_e -t 1 -f $wl_dir/pgbench-e/pgbench_e_constraints.sql",
+	"-n -d wl_pgbench_brokerage -t 1 -f $wl_dir/pgbench-brokerage/pgbench_brokerage_constraints.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-e post-load constraints');
+	'pgbench-brokerage post-load constraints');
 
-is($node->safe_psql('wl_pgbench_e', 'SELECT count(*) FROM broker;'), '20', 'pgbench-e broker count');
-is($node->safe_psql('wl_pgbench_e', 'SELECT count(*) FROM security;'), '200', 'pgbench-e security count');
+is($node->safe_psql('wl_pgbench_brokerage', 'SELECT count(*) FROM broker;'), '20', 'pgbench-brokerage broker count');
+is($node->safe_psql('wl_pgbench_brokerage', 'SELECT count(*) FROM security;'), '200', 'pgbench-brokerage security count');
 
 $node->pgbench(
-	"-n -d wl_pgbench_e -c 2 -j 2 -t 5 -s 2 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_trade_order.sql\@10 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_trade_result.sql\@10 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_customer_position.sql\@13 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_market_watch.sql\@18 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_broker_volume.sql\@5 "
-	  . "-f $wl_dir/pgbench-e/pgbench_e_trade_status.sql\@44",
+	"-n -d wl_pgbench_brokerage -c 2 -j 2 -t 5 -s 2 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_trade_order.sql\@10 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_trade_result.sql\@10 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_customer_position.sql\@13 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_market_watch.sql\@18 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_broker_volume.sql\@5 "
+	  . "-f $wl_dir/pgbench-brokerage/pgbench_brokerage_trade_status.sql\@44",
 	0,
 	[
 		qr{processed: 10/10},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-e workload suite execution');
+	'pgbench-brokerage workload suite execution');
 
-# 3. pgbench-h parallel initialization and workload execution
+# 3. pgbench-analytics parallel initialization and workload execution
 $node->pgbench(
-	"-n -d wl_pgbench_h -t 1 -f $wl_dir/pgbench-h/pgbench_h_schema.sql",
+	"-n -d wl_pgbench_analytics -t 1 -f $wl_dir/pgbench-analytics/pgbench_analytics_schema.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-h schema creation');
+	'pgbench-analytics schema creation');
 
 $node->pgbench(
-	"-n -d wl_pgbench_h -c 2 -j 2 -t 1 -s 1 -D num_workers=2 -f $wl_dir/pgbench-h/pgbench_h_init.sql",
+	"-n -d wl_pgbench_analytics -c 2 -j 2 -t 1 -s 1 -D num_workers=2 -f $wl_dir/pgbench-analytics/pgbench_analytics_init.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-h parallel in-database initialization');
+	'pgbench-analytics parallel in-database initialization');
 
 $node->pgbench(
-	"-n -d wl_pgbench_h -t 1 -f $wl_dir/pgbench-h/pgbench_h_constraints.sql",
+	"-n -d wl_pgbench_analytics -t 1 -f $wl_dir/pgbench-analytics/pgbench_analytics_constraints.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-h post-load constraints');
+	'pgbench-analytics post-load constraints');
 
-is($node->safe_psql('wl_pgbench_h', 'SELECT count(*) FROM region;'), '5', 'pgbench-h region count');
-is($node->safe_psql('wl_pgbench_h', 'SELECT count(*) FROM nation;'), '25', 'pgbench-h nation count');
-is($node->safe_psql('wl_pgbench_h', 'SELECT count(*) FROM supplier;'), '100', 'pgbench-h supplier count');
+is($node->safe_psql('wl_pgbench_analytics', 'SELECT count(*) FROM region;'), '5', 'pgbench-analytics region count');
+is($node->safe_psql('wl_pgbench_analytics', 'SELECT count(*) FROM nation;'), '25', 'pgbench-analytics nation count');
+is($node->safe_psql('wl_pgbench_analytics', 'SELECT count(*) FROM supplier;'), '100', 'pgbench-analytics supplier count');
 
 $node->pgbench(
-	"-n -d wl_pgbench_h -t 1 -s 1 "
-	  . "--group name=queries,clients=1,threads=1,file=$wl_dir/pgbench-h/pgbench_h_queries.sql "
-	  . "--group name=refresh,clients=1,threads=1,file=$wl_dir/pgbench-h/pgbench_h_refresh.sql",
+	"-n -d wl_pgbench_analytics -t 1 -s 1 "
+	  . "--group name=queries,clients=1,threads=1,file=$wl_dir/pgbench-analytics/pgbench_analytics_queries.sql "
+	  . "--group name=refresh,clients=1,threads=1,file=$wl_dir/pgbench-analytics/pgbench_analytics_refresh.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-h workload suite execution (queries + refresh groups)');
+	'pgbench-analytics workload suite execution (queries + refresh groups)');
 
-# 4. pgbench-ds parallel initialization and workload execution
+# 4. pgbench-retail parallel initialization and workload execution
 $node->pgbench(
-	"-n -d wl_pgbench_ds -t 1 -f $wl_dir/pgbench-ds/pgbench_ds_schema.sql",
+	"-n -d wl_pgbench_retail -t 1 -f $wl_dir/pgbench-retail/pgbench_retail_schema.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-ds schema creation');
+	'pgbench-retail schema creation');
 
 $node->pgbench(
-	"-n -d wl_pgbench_ds -c 2 -j 2 -t 1 -s 1 -D num_workers=2 -f $wl_dir/pgbench-ds/pgbench_ds_init.sql",
+	"-n -d wl_pgbench_retail -c 2 -j 2 -t 1 -s 1 -D num_workers=2 -f $wl_dir/pgbench-retail/pgbench_retail_init.sql",
 	0,
 	[
 		qr{processed: 2/2},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-ds parallel in-database initialization');
+	'pgbench-retail parallel in-database initialization');
 
 $node->pgbench(
-	"-n -d wl_pgbench_ds -t 1 -f $wl_dir/pgbench-ds/pgbench_ds_constraints.sql",
+	"-n -d wl_pgbench_retail -t 1 -f $wl_dir/pgbench-retail/pgbench_retail_constraints.sql",
 	0,
 	[qr{processed: 1/1}],
 	[qr{^$}],
-	'pgbench-ds post-load constraints');
+	'pgbench-retail post-load constraints');
 
-is($node->safe_psql('wl_pgbench_ds', 'SELECT count(*) FROM date_dim;'), '730', 'pgbench-ds date_dim count');
-is($node->safe_psql('wl_pgbench_ds', 'SELECT count(*) FROM item;'), '200', 'pgbench-ds item count');
+is($node->safe_psql('wl_pgbench_retail', 'SELECT count(*) FROM date_dim;'), '730', 'pgbench-retail date_dim count');
+is($node->safe_psql('wl_pgbench_retail', 'SELECT count(*) FROM item;'), '200', 'pgbench-retail item count');
 
 $node->pgbench(
-	"-n -d wl_pgbench_ds -t 2 -s 1 "
+	"-n -d wl_pgbench_retail -t 2 -s 1 "
 	  . "--group name=ds_queries,clients=1,threads=1,"
-	  . "file=$wl_dir/pgbench-ds/pgbench_ds_q_store_sales.sql\@25,"
-	  . "file=$wl_dir/pgbench-ds/pgbench_ds_q_cross_channel.sql\@25,"
-	  . "file=$wl_dir/pgbench-ds/pgbench_ds_q_inventory.sql\@25,"
-	  . "file=$wl_dir/pgbench-ds/pgbench_ds_q_promotion.sql\@25 "
-	  . "--group name=ds_maint,clients=1,threads=1,file=$wl_dir/pgbench-ds/pgbench_ds_maintenance.sql",
+	  . "file=$wl_dir/pgbench-retail/pgbench_retail_q_store_sales.sql\@25,"
+	  . "file=$wl_dir/pgbench-retail/pgbench_retail_q_cross_channel.sql\@25,"
+	  . "file=$wl_dir/pgbench-retail/pgbench_retail_q_inventory.sql\@25,"
+	  . "file=$wl_dir/pgbench-retail/pgbench_retail_q_promotion.sql\@25 "
+	  . "--group name=ds_maint,clients=1,threads=1,file=$wl_dir/pgbench-retail/pgbench_retail_maintenance.sql",
 	0,
 	[
 		qr{processed: 4/4},
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-ds workload suite execution');
+	'pgbench-retail workload suite execution');
 
 # 5. pgbench-htap parallel initialization and hybrid HTAP execution
 $node->pgbench(
@@ -3150,7 +3150,7 @@ like($vecbench_phase3_json_content, qr/"mature_recall":\s*\d+\.\d+/, 'JSON repor
 like($vecbench_phase3_json_content, qr/"delta":\s*-?\d+\.\d+/, 'JSON report contains delta');
 like($vecbench_phase3_json_content, qr/"degradation_pct":\s*-?\d+\.\d+/, 'JSON report contains degradation_pct');
 
-# 7. pgbench-graph parallel initialization and LDBC-like graph workload execution
+# 7. pgbench-graph parallel initialization and graph workload execution
 $node->pgbench(
 	"-n -d wl_pgbench_graph -t 1 -f $wl_dir/pgbench-graph/pgbench_graph_schema.sql",
 	0,
@@ -3189,7 +3189,7 @@ $node->pgbench(
 		qr{number of failed transactions: 0 \(0\.000%\)},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC-like graph workload suite execution');
+	'pgbench-graph graph workload suite execution');
 
 # Also verify pgbench-graph scripts work without --reservoir (reservoir_count returns -1)
 $node->pgbench(
@@ -3205,11 +3205,11 @@ $node->pgbench(
 	[qr{^$}],
 	'pgbench-graph workload execution without --reservoir');
 
-# Phase 2 LDBC Suite 1: LSQB (Q1-Q9 cyclic, acyclic, and anti-join pattern matching)
+# Phase 2 Graph Suite 1: Subgraph Pattern Matching (Q1-Q9 cyclic, acyclic, and anti-join)
 $node->pgbench(
 	"-n -d wl_pgbench_graph -c 2 -j 2 -t 1 -s 1 "
 	  . "--sla validation_failures<=0 --sla validation_pct>=100.0 "
-	  . "-f $wl_dir/pgbench-graph/pgbench_ldbc_lsqb.sql",
+	  . "-f $wl_dir/pgbench-graph/pgbench_graph_subgraph.sql",
 	0,
 	[
 		qr{processed: 2/2},
@@ -3218,18 +3218,18 @@ $node->pgbench(
 		qr{SLA total:validation_failures <= 0: actual = 0 \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC LSQB (Q1-Q9) workload suite execution');
+	'pgbench-graph subgraph (Q1-Q9) workload suite execution');
 
-# Phase 2 LDBC Suite 2: LDBC SNB Interactive v1/v2 (multi-group readers IC->\call IS + writers IU/ID)
+# Phase 2 Graph Suite 2: Social Interactive v1/v2 (multi-group readers IC->\call IS + writers IU/ID)
 $node->pgbench(
 	"-n -d wl_pgbench_graph -t 3 -s 1 --tcr=0.1 "
 	  . "--reservoir=persons:512 --reservoir=messages:1024 "
 	  . "--group name=snb_readers,clients=1,threads=1,"
-	  . "file=$wl_dir/pgbench-graph/pgbench_ldbc_snb_ic.sql\@50,"
-	  . "file=$wl_dir/pgbench-graph/pgbench_ldbc_snb_is.sql\@50 "
+	  . "file=$wl_dir/pgbench-graph/pgbench_graph_social_complex.sql\@50,"
+	  . "file=$wl_dir/pgbench-graph/pgbench_graph_social_short.sql\@50 "
 	  . "--group name=snb_writers,clients=1,threads=1,"
-	  . "file=$wl_dir/pgbench-graph/pgbench_ldbc_snb_iu.sql\@70,"
-	  . "file=$wl_dir/pgbench-graph/pgbench_ldbc_snb_id.sql\@30 "
+	  . "file=$wl_dir/pgbench-graph/pgbench_graph_social_insert.sql\@70,"
+	  . "file=$wl_dir/pgbench-graph/pgbench_graph_social_delete.sql\@30 "
 	  . "--sla validation_failures<=0 --sla total:p95<=60s",
 	0,
 	[
@@ -3238,13 +3238,13 @@ $node->pgbench(
 		qr{SLA total:validation_failures <= 0: actual = 0 \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC SNB Interactive v1/v2 multi-group workload execution');
+	'pgbench-graph social interactive v1/v2 multi-group workload execution');
 
-# Phase 3 LDBC Suite 3: LDBC SNB Business Intelligence (Power -> \phase_barrier -> Batch Update -> \phase_barrier -> Throughput)
+# Phase 3 Graph Suite 3: Social Business Intelligence (Power -> \phase_barrier -> Batch Update -> \phase_barrier -> Throughput)
 $node->pgbench(
 	"-n -d wl_pgbench_graph -c 2 -j 2 -t 1 -s 1 "
 	  . "--sla validation_failures<=0 --sla validation_pct>=100.0 "
-	  . "-f $wl_dir/pgbench-graph/pgbench_ldbc_snb_bi.sql",
+	  . "-f $wl_dir/pgbench-graph/pgbench_graph_social_bi.sql",
 	0,
 	[
 		qr{processed: 2/2},
@@ -3253,13 +3253,13 @@ $node->pgbench(
 		qr{SLA total:validation_failures <= 0: actual = 0 \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC SNB BI phased workload execution with phase_barrier');
+	'pgbench-graph social BI phased workload execution with phase_barrier');
 
-# Phase 3 LDBC Suite 4a: LDBC FinBench (TSR, TCR temporal cycles, TW, and TRW conditional ROLLBACK)
+# Phase 3 Graph Suite 4a: Financial Transactions & Fraud (TSR, TCR temporal cycles, TW, and TRW conditional ROLLBACK)
 $node->pgbench(
 	"-n -d wl_pgbench_graph -c 2 -j 2 -t 4 -s 1 "
 	  . "--sla validation_failures<=0 "
-	  . "-f $wl_dir/pgbench-graph/pgbench_ldbc_finbench.sql",
+	  . "-f $wl_dir/pgbench-graph/pgbench_graph_financial.sql",
 	0,
 	[
 		qr{processed: 8/8},
@@ -3268,13 +3268,13 @@ $node->pgbench(
 		qr{SLA total:validation_failures <= 0: actual = 0 \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC FinBench workload execution (TSR, TCR, TW, TRW)');
+	'pgbench-graph financial workload execution (TSR, TCR, TW, TRW)');
 
-# Phase 3 LDBC Suite 4b: LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC with \validate_result)
+# Phase 3 Graph Suite 4b: Graph Algorithms (BFS, WCC, SSSP, PageRank, LCC with \validate_result)
 $node->pgbench(
 	"-n -d wl_pgbench_graph -c 2 -j 2 -t 1 -s 1 "
 	  . "--sla validation_failures<=0 --sla validation_pct>=100.0 "
-	  . "-f $wl_dir/pgbench-graph/pgbench_ldbc_graphalytics.sql",
+	  . "-f $wl_dir/pgbench-graph/pgbench_graph_algorithms.sql",
 	0,
 	[
 		qr{processed: 2/2},
@@ -3283,9 +3283,9 @@ $node->pgbench(
 		qr{SLA total:validation_failures <= 0: actual = 0 \[PASS\]},
 	],
 	[qr{^$}],
-	'pgbench-graph LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC) execution');
+	'pgbench-graph algorithms (BFS, WCC, SSSP, PageRank, LCC) execution');
 
-for my $db (qw(wl_pgbench_b wl_pgbench_c wl_pgbench_e wl_pgbench_h wl_pgbench_ds wl_pgbench_htap wl_pgbench_vec wl_pgbench_graph))
+for my $db (qw(wl_pgbench_banking wl_pgbench_order wl_pgbench_brokerage wl_pgbench_analytics wl_pgbench_retail wl_pgbench_htap wl_pgbench_vec wl_pgbench_graph))
 {
 	$node->safe_psql('postgres', "DROP DATABASE $db;");
 }

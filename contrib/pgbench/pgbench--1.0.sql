@@ -327,7 +327,7 @@ RETURNS double precision
 AS 'MODULE_PATHNAME', 'pgbench_vector_distance_text'
 LANGUAGE C STRICT IMMUTABLE PARALLEL SAFE;
 
-CREATE FUNCTION ldbc_correlated_edge(
+CREATE FUNCTION community_correlated_edge(
     src_id bigint,
     num_vertices bigint,
     num_communities bigint DEFAULT 32,
@@ -335,10 +335,10 @@ CREATE FUNCTION ldbc_correlated_edge(
     seed bigint DEFAULT 0
 )
 RETURNS bigint
-AS 'MODULE_PATHNAME', 'pgbench_ldbc_correlated_edge_sql'
+AS 'MODULE_PATHNAME', 'pgbench_community_correlated_edge_sql'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
-CREATE FUNCTION pgbench_ldbc_correlated_edge(
+CREATE FUNCTION pgbench_community_correlated_edge(
     src_id bigint,
     num_vertices bigint,
     num_communities bigint DEFAULT 32,
@@ -346,10 +346,10 @@ CREATE FUNCTION pgbench_ldbc_correlated_edge(
     seed bigint DEFAULT 0
 )
 RETURNS bigint
-AS 'MODULE_PATHNAME', 'pgbench_ldbc_correlated_edge_sql'
+AS 'MODULE_PATHNAME', 'pgbench_community_correlated_edge_sql'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
-CREATE FUNCTION ldbc_flashmob_ts(
+CREATE FUNCTION burst_timestamp(
     base_ts_us bigint,
     span_us bigint,
     num_spikes bigint DEFAULT 16,
@@ -357,10 +357,10 @@ CREATE FUNCTION ldbc_flashmob_ts(
     seed bigint DEFAULT 0
 )
 RETURNS bigint
-AS 'MODULE_PATHNAME', 'pgbench_ldbc_flashmob_ts_sql'
+AS 'MODULE_PATHNAME', 'pgbench_burst_timestamp_sql'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
-CREATE FUNCTION pgbench_ldbc_flashmob_ts(
+CREATE FUNCTION pgbench_burst_timestamp(
     base_ts_us bigint,
     span_us bigint,
     num_spikes bigint DEFAULT 16,
@@ -368,7 +368,7 @@ CREATE FUNCTION pgbench_ldbc_flashmob_ts(
     seed bigint DEFAULT 0
 )
 RETURNS bigint
-AS 'MODULE_PATHNAME', 'pgbench_ldbc_flashmob_ts_sql'
+AS 'MODULE_PATHNAME', 'pgbench_burst_timestamp_sql'
 LANGUAGE C STRICT VOLATILE PARALLEL RESTRICTED;
 
 CREATE OR REPLACE FUNCTION compute_ground_truth(

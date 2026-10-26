@@ -16,14 +16,20 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <pthread.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 #if defined(__linux__)
 #include <sys/eventfd.h>
+#endif
+#ifdef USE_OPENSSL
+#include <openssl/err.h>
+#include <openssl/ssl.h>
 #endif
 
 #include "common/logging.h"
@@ -34,6 +40,12 @@
 #include "pgbench.h"
 #include "pqexpbuffer.h"
 #include "variable.h"
+
+#define SPANNER_TOKEN_TTL_SEC 2700	/* Refresh OAuth2 token every 45 minutes */
+
+static pthread_mutex_t spanner_token_mu = PTHREAD_MUTEX_INITIALIZER;
+static char *spanner_cached_token = NULL;
+static time_t spanner_token_fetched_at = 0;
 
 typedef struct SpannerPreparedStmt
 {
@@ -93,6 +105,11 @@ struct PgBenchConn
 	char	   *session_name;	/* projects/.../sessions/{sid} */
 	char	   *auth_token;
 	bool		is_pg_dialect;
+	bool		use_tls;
+#ifdef USE_OPENSSL
+	SSL_CTX    *ssl_ctx;
+	SSL		   *ssl;
+#endif
 
 	int			http_sock;
 	int			wakeup_fd;		/* eventfd or pipe read end for poller.c */
@@ -259,6 +276,40 @@ spanner_is_int64_str(const char *s)
 	return strlen(s) <= 19;
 }
 
+static bool
+spanner_is_float64_str(const char *s, double *out_val)
+{
+	const char *p = s;
+	bool		has_dot_or_exp = false;
+	bool		has_digit = false;
+	char	   *endp = NULL;
+	double		d;
+
+	if (p == NULL || *p == '\0')
+		return false;
+	if (*p == '-' || *p == '+')
+		p++;
+	for (; *p != '\0'; p++)
+	{
+		if (isdigit((unsigned char) *p))
+			has_digit = true;
+		else if (*p == '.' || *p == 'e' || *p == 'E')
+			has_dot_or_exp = true;
+		else if (*p != '-' && *p != '+')
+			return false;
+	}
+	if (!has_digit || !has_dot_or_exp)
+		return false;
+
+	errno = 0;
+	d = strtod(s, &endp);
+	if (errno != 0 || endp == s || *endp != '\0' || !isfinite(d))
+		return false;
+	if (out_val != NULL)
+		*out_val = d;
+	return true;
+}
+
 static void
 spanner_build_params_json(int nparams,
 						  const char *const *param_texts,
@@ -285,6 +336,7 @@ spanner_build_params_json(int nparams,
 	{
 		const char *tval = param_texts ? param_texts[i] : NULL;
 		const struct Variable *v = param_vars ? param_vars[i] : NULL;
+		double		dval = 0.0;
 
 		if (i > 0)
 		{
@@ -329,6 +381,18 @@ spanner_build_params_json(int nparams,
 		{
 			spanner_append_json_escaped(&pbuf, tval);
 			appendPQExpBufferStr(&tbuf, "{\"code\": \"INT64\"}");
+		}
+		else if (pg_strcasecmp(tval, "true") == 0 ||
+				 pg_strcasecmp(tval, "false") == 0)
+		{
+			appendPQExpBufferStr(&pbuf,
+								 (pg_strcasecmp(tval, "true") == 0) ? "true" : "false");
+			appendPQExpBufferStr(&tbuf, "{\"code\": \"BOOL\"}");
+		}
+		else if (spanner_is_float64_str(tval, &dval))
+		{
+			appendPQExpBuffer(&pbuf, "%.17g", dval);
+			appendPQExpBufferStr(&tbuf, "{\"code\": \"FLOAT64\"}");
 		}
 		else
 		{
@@ -491,9 +555,77 @@ sp_json_extract_string_field(const char *obj, const char *end, const char *key)
 }
 
 /* -------------------------------------------------------------------------
- * URI & Endpoint Parsing
+ * OAuth2 Token Refresh & URI / Endpoint Parsing
  * -------------------------------------------------------------------------
  */
+
+static void
+spanner_refresh_bearer_token(PgBenchConn *conn, bool force_refresh)
+{
+	const char *cmd = getenv("SPANNER_TOKEN_COMMAND");
+	const char *env_tok = getenv("SPANNER_API_TOKEN");
+
+	if ((cmd == NULL || *cmd == '\0') && !force_refresh &&
+		env_tok != NULL && *env_tok != '\0')
+	{
+		if (conn->auth_token == NULL)
+			conn->auth_token = pg_strdup(env_tok);
+		return;
+	}
+
+	if ((cmd == NULL || *cmd == '\0') && conn->use_tls &&
+		getenv("SPANNER_EMULATOR_HOST") == NULL)
+	{
+		cmd = "gcloud auth application-default print-access-token 2>/dev/null || gcloud auth print-access-token 2>/dev/null";
+	}
+
+	if (cmd != NULL && *cmd != '\0')
+	{
+		time_t		now = time(NULL);
+
+		pthread_mutex_lock(&spanner_token_mu);
+		if (force_refresh || spanner_cached_token == NULL ||
+			(now - spanner_token_fetched_at) >= SPANNER_TOKEN_TTL_SEC)
+		{
+			FILE	   *fp = popen(cmd, "r");
+
+			if (fp != NULL)
+			{
+				char		tbuf[4096];
+				size_t		nread = fread(tbuf, 1, sizeof(tbuf) - 1, fp);
+
+				(void) pclose(fp);
+				tbuf[nread] = '\0';
+				while (nread > 0 &&
+					   (tbuf[nread - 1] == '\n' || tbuf[nread - 1] == '\r' ||
+						isspace((unsigned char) tbuf[nread - 1])))
+				{
+					tbuf[--nread] = '\0';
+				}
+				if (nread > 0)
+				{
+					pg_free(spanner_cached_token);
+					spanner_cached_token = pg_strdup(tbuf);
+					spanner_token_fetched_at = now;
+				}
+			}
+		}
+		if (spanner_cached_token != NULL)
+		{
+			if (conn->auth_token == NULL ||
+				strcmp(conn->auth_token, spanner_cached_token) != 0)
+			{
+				pg_free(conn->auth_token);
+				conn->auth_token = pg_strdup(spanner_cached_token);
+			}
+		}
+		pthread_mutex_unlock(&spanner_token_mu);
+		return;
+	}
+
+	if (conn->auth_token == NULL && env_tok != NULL && *env_tok != '\0')
+		conn->auth_token = pg_strdup(env_tok);
+}
 
 static void
 spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
@@ -503,6 +635,7 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 	const char *eff_db = (dbname && *dbname) ? dbname : "projects/test-project/instances/test-instance/databases/postgres";
 	const char *p = eff_db;
 	const char *qmark;
+	bool		has_tls_override = false;
 
 	(void) user;
 	conn->project = pg_strdup("test-project");
@@ -510,9 +643,6 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 	conn->database = pg_strdup("postgres");
 	conn->is_pg_dialect = (driver_dialect != NULL &&
 						   pg_strcasecmp(driver_dialect, "postgresql") == 0);
-
-	if (getenv("SPANNER_API_TOKEN") != NULL)
-		conn->auth_token = pg_strdup(getenv("SPANNER_API_TOKEN"));
 
 	if (pg_strncasecmp(p, "spanner://", 10) == 0)
 		p += 10;
@@ -526,6 +656,7 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 		const char *hp = strstr(qmark + 1, "host=");
 		const char *pp = strstr(qmark + 1, "port=");
 		const char *dp = strstr(qmark + 1, "dialect=");
+		const char *tp = strstr(qmark + 1, "tls=");
 		const char *e_start = NULL;
 
 		if (ep != NULL)
@@ -538,16 +669,31 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 			const char *e_end = strchr(e_start, '&');
 			char	   *ep_str = e_end ?
 				pnstrdup(e_start, e_end - e_start) : pg_strdup(e_start);
-			char	   *colon = strchr(ep_str, ':');
+			char	   *ep_host = ep_str;
+			char	   *colon;
 
+			if (pg_strncasecmp(ep_host, "https://", 8) == 0)
+			{
+				ep_host += 8;
+				conn->use_tls = true;
+				has_tls_override = true;
+			}
+			else if (pg_strncasecmp(ep_host, "http://", 7) == 0)
+			{
+				ep_host += 7;
+				conn->use_tls = false;
+				has_tls_override = true;
+			}
+
+			colon = strchr(ep_host, ':');
 			if (colon != NULL)
 			{
 				*colon = '\0';
-				conn->host = pg_strdup(ep_str);
+				conn->host = pg_strdup(ep_host);
 				conn->port = pg_strdup(colon + 1);
 			}
 			else
-				conn->host = pg_strdup(ep_str);
+				conn->host = pg_strdup(ep_host);
 			pg_free(ep_str);
 		}
 		if (pp != NULL && conn->port == NULL)
@@ -568,6 +714,21 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 				conn->is_pg_dialect = true;
 			else if (pg_strncasecmp(d_start, "googlesql", 9) == 0)
 				conn->is_pg_dialect = false;
+		}
+		if (tp != NULL)
+		{
+			const char *t_start = tp + 4;
+
+			if (*t_start == '1' || pg_strncasecmp(t_start, "true", 4) == 0)
+			{
+				conn->use_tls = true;
+				has_tls_override = true;
+			}
+			else if (*t_start == '0' || pg_strncasecmp(t_start, "false", 5) == 0)
+			{
+				conn->use_tls = false;
+				has_tls_override = true;
+			}
 		}
 	}
 
@@ -650,25 +811,59 @@ spanner_parse_conn_params(PgBenchConn *conn, const char *host, const char *port,
 				conn->host = pg_strdup(env_emu);
 		}
 		else
-			conn->host = pg_strdup("127.0.0.1");
+		{
+			conn->host = pg_strdup("spanner.googleapis.com");
+			if (conn->port == NULL && (port == NULL || *port == '\0'))
+				conn->port = pg_strdup("443");
+			if (!has_tls_override)
+				conn->use_tls = true;
+		}
 	}
 
 	if (conn->port == NULL)
 	{
 		if (port != NULL && *port != '\0')
 			conn->port = pg_strdup(port);
+		else if (conn->use_tls ||
+				 pg_strcasecmp(conn->host, "spanner.googleapis.com") == 0)
+			conn->port = pg_strdup("443");
 		else
 			conn->port = pg_strdup("9020");
 	}
 
+	if (!has_tls_override)
+	{
+		conn->use_tls = (strcmp(conn->port, "443") == 0 ||
+						 pg_strcasecmp(conn->host, "spanner.googleapis.com") == 0);
+	}
+
 	conn->db_resource = psprintf("projects/%s/instances/%s/databases/%s",
 								 conn->project, conn->instance, conn->database);
+	spanner_refresh_bearer_token(conn, false);
 }
 
 /* -------------------------------------------------------------------------
- * Synchronous HTTP/1.1 JSON RPC Client for Worker Thread
+ * Synchronous HTTP/1.1 (with optional OpenSSL TLS) JSON RPC Client
  * -------------------------------------------------------------------------
  */
+
+static void
+spanner_disconnect_tcp(PgBenchConn *conn)
+{
+#ifdef USE_OPENSSL
+	if (conn->ssl != NULL)
+	{
+		(void) SSL_shutdown(conn->ssl);
+		SSL_free(conn->ssl);
+		conn->ssl = NULL;
+	}
+#endif
+	if (conn->http_sock >= 0)
+	{
+		close(conn->http_sock);
+		conn->http_sock = -1;
+	}
+}
 
 static int
 spanner_connect_tcp(PgBenchConn *conn)
@@ -706,15 +901,89 @@ spanner_connect_tcp(PgBenchConn *conn)
 		sock = -1;
 	}
 
+	freeaddrinfo(res);
+
 	if (sock < 0)
 	{
 		printfPQExpBuffer(&conn->err_buf,
 						  "could not connect to Spanner endpoint at \"%s:%s\": %s\n",
 						  conn->host, conn->port, strerror(errno));
+		return -1;
 	}
 
-	freeaddrinfo(res);
+	if (conn->use_tls)
+	{
+#ifdef USE_OPENSSL
+		if (conn->ssl_ctx == NULL)
+		{
+			conn->ssl_ctx = SSL_CTX_new(TLS_client_method());
+			if (conn->ssl_ctx == NULL)
+			{
+				printfPQExpBuffer(&conn->err_buf,
+								  "could not create OpenSSL SSL_CTX for \"%s:%s\"\n",
+								  conn->host, conn->port);
+				close(sock);
+				return -1;
+			}
+		}
+		conn->ssl = SSL_new(conn->ssl_ctx);
+		if (conn->ssl == NULL)
+		{
+			printfPQExpBuffer(&conn->err_buf,
+							  "could not create OpenSSL SSL object for \"%s:%s\"\n",
+							  conn->host, conn->port);
+			close(sock);
+			return -1;
+		}
+		(void) SSL_set_tlsext_host_name(conn->ssl, conn->host);
+		SSL_set_fd(conn->ssl, sock);
+		if (SSL_connect(conn->ssl) != 1)
+		{
+			unsigned long ssl_err = ERR_get_error();
+
+			printfPQExpBuffer(&conn->err_buf,
+							  "TLS handshake with Spanner endpoint \"%s:%s\" failed: %s\n",
+							  conn->host, conn->port,
+							  ssl_err ? ERR_reason_error_string(ssl_err) : "SSL_connect error");
+			SSL_free(conn->ssl);
+			conn->ssl = NULL;
+			close(sock);
+			return -1;
+		}
+#else
+		printfPQExpBuffer(&conn->err_buf,
+						  "Spanner TLS connection required for \"%s:%s\", but pgbench was built without OpenSSL\n",
+						  conn->host, conn->port);
+		close(sock);
+		return -1;
+#endif
+	}
+
 	return sock;
+}
+
+static ssize_t
+spanner_socket_write(PgBenchConn *conn, const char *buf, size_t len)
+{
+#ifdef USE_OPENSSL
+	if (conn->ssl != NULL)
+		return (ssize_t) SSL_write(conn->ssl, buf, (int) len);
+#endif
+#ifdef MSG_NOSIGNAL
+	return send(conn->http_sock, buf, len, MSG_NOSIGNAL);
+#else
+	return send(conn->http_sock, buf, len, 0);
+#endif
+}
+
+static ssize_t
+spanner_socket_read(PgBenchConn *conn, char *buf, size_t cap)
+{
+#ifdef USE_OPENSSL
+	if (conn->ssl != NULL)
+		return (ssize_t) SSL_read(conn->ssl, buf, (int) cap);
+#endif
+	return recv(conn->http_sock, buf, cap, 0);
 }
 
 static bool
@@ -725,35 +994,50 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 	PQExpBufferData req;
 	size_t		body_len = json_body ? strlen(json_body) : 0;
 	int			attempt;
+	bool		retried_auth = false;
 
 	*out_http_status = 500;
 	*out_resp_body = NULL;
 	*out_resp_len = 0;
 
 	initPQExpBuffer(&req);
-	printfPQExpBuffer(&req,
-					  "%s %s HTTP/1.1\r\n"
-					  "Host: %s:%s\r\n"
-					  "Connection: keep-alive\r\n"
-					  "Content-Type: application/json\r\n"
-					  "Accept: application/json\r\n"
-					  "Content-Length: %zu\r\n",
-					  method, uri_path,
-					  conn->host, conn->port,
-					  body_len);
-	if (conn->auth_token != NULL)
-		appendPQExpBuffer(&req, "Authorization: Bearer %s\r\n", conn->auth_token);
-	appendPQExpBufferStr(&req, "\r\n");
-	if (body_len > 0)
-		appendBinaryPQExpBuffer(&req, json_body, body_len);
 
-	for (attempt = 0; attempt < 2; attempt++)
+	for (attempt = 0; attempt < 3; attempt++)
 	{
 		size_t		sent = 0;
 		bool		send_ok = true;
 		char	   *rbuf = NULL;
 		size_t		rlen = 0;
 		size_t		rcap = 8192;
+
+		spanner_refresh_bearer_token(conn, false);
+
+		resetPQExpBuffer(&req);
+		if (strcmp(conn->port, "443") == 0 || strcmp(conn->port, "80") == 0)
+		{
+			printfPQExpBuffer(&req,
+							  "%s %s HTTP/1.1\r\n"
+							  "Host: %s\r\n",
+							  method, uri_path, conn->host);
+		}
+		else
+		{
+			printfPQExpBuffer(&req,
+							  "%s %s HTTP/1.1\r\n"
+							  "Host: %s:%s\r\n",
+							  method, uri_path, conn->host, conn->port);
+		}
+		appendPQExpBuffer(&req,
+						  "Connection: keep-alive\r\n"
+						  "Content-Type: application/json\r\n"
+						  "Accept: application/json\r\n"
+						  "Content-Length: %zu\r\n",
+						  body_len);
+		if (conn->auth_token != NULL)
+			appendPQExpBuffer(&req, "Authorization: Bearer %s\r\n", conn->auth_token);
+		appendPQExpBufferStr(&req, "\r\n");
+		if (body_len > 0)
+			appendBinaryPQExpBuffer(&req, json_body, body_len);
 
 		if (conn->http_sock < 0)
 		{
@@ -767,13 +1051,9 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 
 		while (sent < req.len)
 		{
-			ssize_t		n;
+			ssize_t		n = spanner_socket_write(conn, req.data + sent,
+												 req.len - sent);
 
-#ifdef MSG_NOSIGNAL
-			n = send(conn->http_sock, req.data + sent, req.len - sent, MSG_NOSIGNAL);
-#else
-			n = send(conn->http_sock, req.data + sent, req.len - sent, 0);
-#endif
 			if (n > 0)
 			{
 				sent += (size_t) n;
@@ -787,8 +1067,7 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 
 		if (!send_ok)
 		{
-			close(conn->http_sock);
-			conn->http_sock = -1;
+			spanner_disconnect_tcp(conn);
 			continue;
 		}
 
@@ -890,6 +1169,16 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 
 					if (complete)
 					{
+						if (*out_http_status == 401 && !retried_auth &&
+							getenv("SPANNER_TOKEN_COMMAND") != NULL)
+						{
+							retried_auth = true;
+							termPQExpBuffer(&cbuf);
+							pg_free(rbuf);
+							rbuf = NULL;
+							spanner_refresh_bearer_token(conn, true);
+							break;
+						}
 						*out_resp_body = cbuf.data;
 						*out_resp_len = cbuf.len;
 						pg_free(rbuf);
@@ -902,6 +1191,15 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 				{
 					if (rlen >= hdr_len + clen)
 					{
+						if (*out_http_status == 401 && !retried_auth &&
+							getenv("SPANNER_TOKEN_COMMAND") != NULL)
+						{
+							retried_auth = true;
+							pg_free(rbuf);
+							rbuf = NULL;
+							spanner_refresh_bearer_token(conn, true);
+							break;
+						}
 						*out_resp_body = pnstrdup(rbuf + hdr_len, clen);
 						*out_resp_len = clen;
 						pg_free(rbuf);
@@ -924,7 +1222,7 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 				rcap *= 2;
 				rbuf = pg_realloc(rbuf, rcap);
 			}
-			n = recv(conn->http_sock, rbuf + rlen, rcap - rlen, 0);
+			n = spanner_socket_read(conn, rbuf + rlen, rcap - rlen);
 			if (n > 0)
 			{
 				rlen += (size_t) n;
@@ -938,8 +1236,7 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 				*out_resp_body = pnstrdup(rbuf + hdr_len, blen);
 				*out_resp_len = blen;
 				pg_free(rbuf);
-				close(conn->http_sock);
-				conn->http_sock = -1;
+				spanner_disconnect_tcp(conn);
 				termPQExpBuffer(&req);
 				return true;
 			}
@@ -948,9 +1245,11 @@ spanner_http_rpc(PgBenchConn *conn, const char *method, const char *uri_path,
 			break;
 		}
 
-		pg_free(rbuf);
-		close(conn->http_sock);
-		conn->http_sock = -1;
+		if (rbuf != NULL)
+		{
+			pg_free(rbuf);
+			spanner_disconnect_tcp(conn);
+		}
 	}
 
 	printfPQExpBuffer(&conn->err_buf,
@@ -1476,6 +1775,243 @@ spanner_parse_result_set(PgBenchConn *conn, const char *resp, size_t len,
 }
 
 static PgBenchResult *
+spanner_execute_ddl_batch(PgBenchConn *conn, char **stmts, int nstmts)
+{
+	PQExpBufferData path;
+	PQExpBufferData body;
+	int			http_status = 0;
+	char	   *resp = NULL;
+	size_t		rlen = 0;
+	int			poll_count = 0;
+	PgBenchResult *res;
+
+	if (nstmts <= 0)
+		return spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
+
+	initPQExpBuffer(&path);
+	printfPQExpBuffer(&path, "/v1/%s/ddl", conn->db_resource);
+	initPQExpBuffer(&body);
+	appendPQExpBufferStr(&body, "{\"statements\": [");
+	for (int i = 0; i < nstmts; i++)
+	{
+		if (i > 0)
+			appendPQExpBufferStr(&body, ", ");
+		spanner_append_json_escaped(&body, stmts[i]);
+	}
+	appendPQExpBufferStr(&body, "]}");
+
+	if (!spanner_http_rpc(conn, "PATCH", path.data, body.data,
+						  &http_status, &resp, &rlen))
+	{
+		termPQExpBuffer(&path);
+		termPQExpBuffer(&body);
+		return spanner_make_result(PGBENCH_RES_FATAL_ERROR,
+								   conn->err_buf.data, "08006");
+	}
+	termPQExpBuffer(&path);
+	termPQExpBuffer(&body);
+
+	if (http_status >= 400)
+	{
+		res = spanner_parse_error_response(http_status,
+										   resp ? resp : "", rlen);
+		pg_free(resp);
+		return res;
+	}
+
+	/* Poll Long-Running Operation (LRO) if done == false, and check error */
+	while (resp != NULL)
+	{
+		const char *end = resp + rlen;
+		const char *err_obj = sp_json_find_field(resp, end, "error");
+		const char *done_v = sp_json_find_field(resp, end, "done");
+		bool		is_done = true;
+
+		if (err_obj != NULL && *err_obj == '{')
+		{
+			res = spanner_parse_error_response(400, resp, rlen);
+			pg_free(resp);
+			return res;
+		}
+		if (done_v != NULL && end - done_v >= 5 &&
+			strncmp(done_v, "false", 5) == 0)
+			is_done = false;
+
+		if (is_done)
+			break;
+
+		{
+			char	   *op_name = sp_json_extract_string_field(resp, end, "name");
+			PQExpBufferData op_path;
+
+			pg_free(resp);
+			resp = NULL;
+			rlen = 0;
+
+			if (op_name == NULL || *op_name == '\0')
+			{
+				pg_free(op_name);
+				break;
+			}
+
+			if (poll_count > 0)
+				usleep(150000);
+			poll_count++;
+
+			initPQExpBuffer(&op_path);
+			if (strncmp(op_name, "/v1/", 4) == 0)
+				appendPQExpBufferStr(&op_path, op_name);
+			else
+				printfPQExpBuffer(&op_path, "/v1/%s", op_name);
+			pg_free(op_name);
+
+			if (!spanner_http_rpc(conn, "GET", op_path.data, NULL,
+								  &http_status, &resp, &rlen))
+			{
+				termPQExpBuffer(&op_path);
+				return spanner_make_result(PGBENCH_RES_FATAL_ERROR,
+										   conn->err_buf.data, "08006");
+			}
+			termPQExpBuffer(&op_path);
+
+			if (http_status >= 400)
+			{
+				res = spanner_parse_error_response(http_status,
+												   resp ? resp : "", rlen);
+				pg_free(resp);
+				return res;
+			}
+		}
+	}
+
+	pg_free(resp);
+	return spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
+}
+
+static PgBenchResult *
+spanner_execute_ddl_script(PgBenchConn *conn, const char *sql)
+{
+	int			cap = 16;
+	int			nstmts = 0;
+	char	  **stmts = pg_malloc0_array(char *, cap);
+	int			batch_is_drop = -1;
+	const char *cur = sql;
+	const char *seg_start = sql;
+	PgBenchResult *res = NULL;
+
+	while (*cur != '\0')
+	{
+		if (*cur == '\'' || *cur == '"' || *cur == '`')
+		{
+			char		q = *cur++;
+
+			while (*cur != '\0')
+			{
+				if (*cur == '\\' && cur[1] != '\0')
+					cur += 2;
+				else if (*cur == q)
+				{
+					cur++;
+					if (*cur == q)
+						cur++;
+					else
+						break;
+				}
+				else
+					cur++;
+			}
+		}
+		else if (cur[0] == '-' && cur[1] == '-')
+		{
+			cur += 2;
+			while (*cur != '\0' && *cur != '\n')
+				cur++;
+		}
+		else if (cur[0] == '/' && cur[1] == '*')
+		{
+			cur += 2;
+			while (*cur != '\0' && !(cur[0] == '*' && cur[1] == '/'))
+				cur++;
+			if (*cur != '\0')
+				cur += 2;
+		}
+		else if (*cur == ';' || cur[1] == '\0')
+		{
+			size_t		seg_len = (*cur == ';') ? (size_t) (cur - seg_start)
+												: (size_t) (cur + 1 - seg_start);
+			char	   *raw = pnstrdup(seg_start, seg_len);
+			const char *sp = spanner_skip_sql_ws_and_comments(raw);
+
+			if (sp != NULL && *sp != '\0')
+			{
+				char	   *trimmed = pg_strdup(sp);
+				size_t		tlen = strlen(trimmed);
+
+				while (tlen > 0 &&
+					   (isspace((unsigned char) trimmed[tlen - 1]) ||
+						trimmed[tlen - 1] == ';'))
+					trimmed[--tlen] = '\0';
+
+				if (tlen > 0 &&
+					!((pg_strncasecmp(trimmed, "VACUUM", 6) == 0 &&
+					   (trimmed[6] == '\0' || isspace((unsigned char) trimmed[6]))) ||
+					  (pg_strncasecmp(trimmed, "ANALYZE", 7) == 0 &&
+					   (trimmed[7] == '\0' || isspace((unsigned char) trimmed[7]))) ||
+					  (pg_strncasecmp(trimmed, "SET", 3) == 0 &&
+					   isspace((unsigned char) trimmed[3]))))
+				{
+					int			is_drop = (pg_strncasecmp(trimmed, "DROP", 4) == 0 &&
+										   isspace((unsigned char) trimmed[4])) ? 1 : 0;
+
+					if (batch_is_drop != -1 && batch_is_drop != is_drop && nstmts > 0)
+					{
+						res = spanner_execute_ddl_batch(conn, stmts, nstmts);
+						for (int i = 0; i < nstmts; i++)
+							pg_free(stmts[i]);
+						nstmts = 0;
+						if (res->status != PGBENCH_RES_COMMAND_OK)
+						{
+							pg_free(trimmed);
+							pg_free(raw);
+							pg_free(stmts);
+							return res;
+						}
+						spanner_free_result(res);
+						res = NULL;
+					}
+					batch_is_drop = is_drop;
+					if (nstmts >= cap)
+					{
+						cap *= 2;
+						stmts = pg_realloc_array(stmts, char *, cap);
+					}
+					stmts[nstmts++] = trimmed;
+				}
+				else
+					pg_free(trimmed);
+			}
+			pg_free(raw);
+			cur++;
+			seg_start = cur;
+		}
+		else
+			cur++;
+	}
+
+	if (nstmts > 0)
+	{
+		res = spanner_execute_ddl_batch(conn, stmts, nstmts);
+		for (int i = 0; i < nstmts; i++)
+			pg_free(stmts[i]);
+	}
+	else
+		res = spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
+
+	pg_free(stmts);
+	return res;
+}
+
+static PgBenchResult *
 spanner_execute_sql_task(PgBenchConn *conn, const char *sql,
 						 const char *params_json, const char *param_types_json)
 {
@@ -1565,9 +2101,12 @@ spanner_execute_sql_task(PgBenchConn *conn, const char *sql,
 		return spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
 	}
 
-	/* VACUUM is a no-op on Spanner */
-	if (pg_strncasecmp(p, "VACUUM", 6) == 0 &&
-		(p[6] == '\0' || p[6] == ';' || isspace((unsigned char) p[6])))
+	/* VACUUM, ANALYZE, and SET are no-ops on Spanner */
+	if ((pg_strncasecmp(p, "VACUUM", 6) == 0 &&
+		 (p[6] == '\0' || p[6] == ';' || isspace((unsigned char) p[6]))) ||
+		(pg_strncasecmp(p, "ANALYZE", 7) == 0 &&
+		 (p[7] == '\0' || p[7] == ';' || isspace((unsigned char) p[7]))) ||
+		(pg_strncasecmp(p, "SET", 3) == 0 && isspace((unsigned char) p[3])))
 		return spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
 
 	/* Translate TRUNCATE [TABLE] <tbl> into DELETE FROM <tbl> WHERE true */
@@ -1589,7 +2128,8 @@ spanner_execute_sql_task(PgBenchConn *conn, const char *sql,
 	}
 
 	if (pg_strncasecmp(p, "SELECT", 6) == 0 ||
-		pg_strncasecmp(p, "WITH", 4) == 0)
+		pg_strncasecmp(p, "WITH", 4) == 0 ||
+		pg_strncasecmp(p, "GRAPH", 5) == 0)
 		is_select = true;
 	else if (pg_strncasecmp(p, "CREATE", 6) == 0 ||
 			 pg_strncasecmp(p, "DROP", 4) == 0 ||
@@ -1599,108 +2139,9 @@ spanner_execute_sql_task(PgBenchConn *conn, const char *sql,
 	/* Dispatch DDL via UpdateDatabaseDdl (/v1/{db}/ddl) + poll LRO until done */
 	if (is_ddl)
 	{
-		char	   *ddl_trimmed = pg_strdup(p);
-		size_t		dlen = strlen(ddl_trimmed);
-
-		while (dlen > 0 &&
-			   (isspace((unsigned char) ddl_trimmed[dlen - 1]) ||
-				ddl_trimmed[dlen - 1] == ';'))
-		{
-			ddl_trimmed[--dlen] = '\0';
-		}
-
-		initPQExpBuffer(&path);
-		printfPQExpBuffer(&path, "/v1/%s/ddl", conn->db_resource);
-		initPQExpBuffer(&body);
-		appendPQExpBufferStr(&body, "{\"statements\": [");
-		spanner_append_json_escaped(&body, ddl_trimmed);
-		appendPQExpBufferStr(&body, "]}");
-		pg_free(ddl_trimmed);
-
-		if (!spanner_http_rpc(conn, "PATCH", path.data, body.data,
-							  &http_status, &resp, &rlen))
-		{
-			termPQExpBuffer(&path);
-			termPQExpBuffer(&body);
-			pg_free(rewritten_sql);
-			return spanner_make_result(PGBENCH_RES_FATAL_ERROR,
-									   conn->err_buf.data, "08006");
-		}
-		termPQExpBuffer(&path);
-		termPQExpBuffer(&body);
+		res = spanner_execute_ddl_script(conn, p);
 		pg_free(rewritten_sql);
-
-		if (http_status >= 400)
-		{
-			res = spanner_parse_error_response(http_status,
-											   resp ? resp : "", rlen);
-			pg_free(resp);
-			return res;
-		}
-
-		/* Poll Long-Running Operation (LRO) if done == false, and check error */
-		while (resp != NULL)
-		{
-			const char *end = resp + rlen;
-			const char *err_obj = sp_json_find_field(resp, end, "error");
-			const char *done_v = sp_json_find_field(resp, end, "done");
-			bool		is_done = true;
-
-			if (err_obj != NULL && *err_obj == '{')
-			{
-				res = spanner_parse_error_response(400, resp, rlen);
-				pg_free(resp);
-				return res;
-			}
-			if (done_v != NULL && end - done_v >= 5 &&
-				strncmp(done_v, "false", 5) == 0)
-				is_done = false;
-
-			if (is_done)
-				break;
-
-			{
-				char	   *op_name = sp_json_extract_string_field(resp, end, "name");
-				PQExpBufferData op_path;
-
-				pg_free(resp);
-				resp = NULL;
-				rlen = 0;
-
-				if (op_name == NULL || *op_name == '\0')
-				{
-					pg_free(op_name);
-					break;
-				}
-
-				initPQExpBuffer(&op_path);
-				if (strncmp(op_name, "/v1/", 4) == 0)
-					appendPQExpBufferStr(&op_path, op_name);
-				else
-					printfPQExpBuffer(&op_path, "/v1/%s", op_name);
-				pg_free(op_name);
-
-				if (!spanner_http_rpc(conn, "GET", op_path.data, NULL,
-									  &http_status, &resp, &rlen))
-				{
-					termPQExpBuffer(&op_path);
-					return spanner_make_result(PGBENCH_RES_FATAL_ERROR,
-											   conn->err_buf.data, "08006");
-				}
-				termPQExpBuffer(&op_path);
-
-				if (http_status >= 400)
-				{
-					res = spanner_parse_error_response(http_status,
-													   resp ? resp : "", rlen);
-					pg_free(resp);
-					return res;
-				}
-			}
-		}
-
-		pg_free(resp);
-		return spanner_make_result(PGBENCH_RES_COMMAND_OK, NULL, NULL);
+		return res;
 	}
 
 	/* Build ExecuteSql request */
@@ -1995,13 +2436,19 @@ spanner_signal_wakeup(PgBenchConn *conn)
 	{
 		char		b = 1;
 
-		(void) write(conn->wakeup_write_fd, &b, 1);
+		if (write(conn->wakeup_write_fd, &b, 1) < 0)
+		{
+			/* best-effort non-blocking wakeup */
+		}
 	}
 	else if (conn->wakeup_fd >= 0)
 	{
 		uint64		val = 1;
 
-		(void) write(conn->wakeup_fd, &val, sizeof(val));
+		if (write(conn->wakeup_fd, &val, sizeof(val)) < 0)
+		{
+			/* best-effort non-blocking wakeup */
+		}
 	}
 }
 
@@ -2314,8 +2761,14 @@ spanner_finish(PgBenchConn *conn)
 
 	spanner_rpc_delete_session(conn);
 
-	if (conn->http_sock >= 0)
-		close(conn->http_sock);
+	spanner_disconnect_tcp(conn);
+#ifdef USE_OPENSSL
+	if (conn->ssl_ctx != NULL)
+	{
+		SSL_CTX_free(conn->ssl_ctx);
+		conn->ssl_ctx = NULL;
+	}
+#endif
 	if (conn->wakeup_fd >= 0)
 		close(conn->wakeup_fd);
 	if (conn->wakeup_write_fd >= 0)
@@ -2929,6 +3382,17 @@ spanner_flush_mutation_batch(PgBenchCopyStream *stream)
 						  &http_status, &resp, &rlen) ||
 		http_status >= 400)
 	{
+		if (http_status >= 400 && resp != NULL)
+		{
+			PgBenchResult *er = spanner_parse_error_response(http_status, resp, rlen);
+
+			if (er != NULL)
+			{
+				if (er->err_msg != NULL && *er->err_msg != '\0')
+					printfPQExpBuffer(&stream->conn->err_buf, "%s", er->err_msg);
+				spanner_free_result(er);
+			}
+		}
 		ok = false;
 		stream->failed = true;
 	}
@@ -2948,6 +3412,7 @@ spanner_append_tsv_mutation_row(PgBenchCopyStream *stream,
 	const char *p = line;
 	const char *end = line + len;
 	int			cidx = 0;
+	int			max_batch_rows;
 
 	if (len > 0 && end[-1] == '\r')
 		end--;
@@ -2985,7 +3450,13 @@ spanner_append_tsv_mutation_row(PgBenchCopyStream *stream,
 	appendPQExpBufferChar(&stream->values_json, ']');
 	stream->batch_rows++;
 
-	if (stream->batch_rows >= 500 || stream->values_json.len >= 262144)
+	max_batch_rows = (stream->ncols > 0) ? (40000 / stream->ncols) : 1000;
+	if (max_batch_rows < 100)
+		max_batch_rows = 100;
+	else if (max_batch_rows > 5000)
+		max_batch_rows = 5000;
+
+	if (stream->batch_rows >= max_batch_rows || stream->values_json.len >= 2097152)
 		return spanner_flush_mutation_batch(stream);
 	return true;
 }
@@ -3056,6 +3527,8 @@ static bool
 spanner_copy_put_row(PgBenchCopyStream *stream, int ncols,
 					 const struct PgBenchValue *cols)
 {
+	int			max_batch_rows;
+
 	if (stream == NULL || stream->failed)
 		return false;
 
@@ -3097,7 +3570,13 @@ spanner_copy_put_row(PgBenchCopyStream *stream, int ncols,
 	appendPQExpBufferChar(&stream->values_json, ']');
 	stream->batch_rows++;
 
-	if (stream->batch_rows >= 500 || stream->values_json.len >= 262144)
+	max_batch_rows = (stream->ncols > 0) ? (40000 / stream->ncols) : 1000;
+	if (max_batch_rows < 100)
+		max_batch_rows = 100;
+	else if (max_batch_rows > 5000)
+		max_batch_rows = 5000;
+
+	if (stream->batch_rows >= max_batch_rows || stream->values_json.len >= 2097152)
 		return spanner_flush_mutation_batch(stream);
 	return true;
 }

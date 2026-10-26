@@ -492,20 +492,18 @@ else
             fi
         fi
         log_info "Checking out requested commit '$COMMIT_OVERRIDE' on branch '$FIRST_BRANCH'..."
-        if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
-            git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || \
-                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
-                git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1 || true
-            if ! git -C "$PG_SRC_DIR" cat-file -e "${COMMIT_OVERRIDE}^{tree}" 2>/dev/null; then
-                git -C "$PG_SRC_DIR" fetch --shallow-since="365 days ago" origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || true
-            fi
-        fi
+        git -C "$PG_SRC_DIR" reset --hard >/dev/null 2>&1 || true
         if ! git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1; then
-            echo "[run_perffarm] ERROR: Failed to check out commit '$COMMIT_OVERRIDE' in $PG_SRC_DIR" >&2
-            exit 1
+            git -C "$PG_SRC_DIR" fetch --depth=1 origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || \
+                git -C "$PG_SRC_DIR" fetch origin "$COMMIT_OVERRIDE" >/dev/null 2>&1 || true
+            if ! git -C "$PG_SRC_DIR" checkout -f "$COMMIT_OVERRIDE" >/dev/null 2>&1; then
+                echo "[run_perffarm] ERROR: Failed to check out commit '$COMMIT_OVERRIDE' in $PG_SRC_DIR" >&2
+                exit 1
+            fi
         fi
     else
         log_info "Checking out latest PostgreSQL branch '$FIRST_BRANCH' from $PG_GIT_URL..."
+        git -C "$PG_SRC_DIR" reset --hard >/dev/null 2>&1 || true
         git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH:refs/remotes/origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
             git -C "$PG_SRC_DIR" fetch origin "$FIRST_BRANCH" >/dev/null 2>&1
         if ! (git -C "$PG_SRC_DIR" checkout -f "origin/$FIRST_BRANCH" >/dev/null 2>&1 || \
@@ -766,6 +764,11 @@ PY
     exit 1
 }
 
+EFFECTIVE_CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}"
+if [[ "$EFFECTIVE_CFLAGS" != *"-std="* ]]; then
+    EFFECTIVE_CFLAGS="$EFFECTIVE_CFLAGS -std=gnu17 -fwrapv"
+fi
+
 if [[ -n "${PREBUILT_PG_CONFIG:-}" ]] && command -v "${PREBUILT_PG_CONFIG}" >/dev/null 2>&1 && [[ -z "$COMMIT_OVERRIDE" ]]; then
     TARGET_PG_CONFIG="$(command -v "$PREBUILT_PG_CONFIG")"
     BUILD_STATUS="prebuilt"
@@ -775,28 +778,64 @@ else
     (
         set -e
         cd "$PG_SRC_DIR"
-        CFG_INPUT_HASH="$(sha256sum configure configure.ac src/include/pg_config.h.in 2>/dev/null | sha256sum | awk '{print $1}')"
-        CFG_SIG="${EFFECTIVE_CC}|${CFLAGS:--O2 -g -fno-omit-frame-pointer}|${EFFECTIVE_CFG_FLAGS}|${CFG_INPUT_HASH}"
+        find src -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+
+        CFG_HELP="$(./configure --help 2>/dev/null || true)"
+        COMPAT_CFG_FLAGS=""
+        for flag in $EFFECTIVE_CFG_FLAGS; do
+            flag_name="${flag%%=*}"
+            if [[ "$CFG_HELP" == *"$flag_name"* ]]; then
+                COMPAT_CFG_FLAGS="$COMPAT_CFG_FLAGS $flag"
+            fi
+        done
+
+        if [[ -f "src/bin/pg_rewind/copy_fetch.c" ]] && grep -q '\bcopy_file_range(' "src/bin/pg_rewind/copy_fetch.c" 2>/dev/null; then
+            sed -i 's/\bcopy_file_range\b/pg_rewind_copy_file_range/g' "src/bin/pg_rewind/copy_fetch.c"
+        fi
+
+        CFG_INPUT_HASH="$({ sha256sum configure configure.ac configure.in src/include/pg_config.h.in 2>/dev/null || true; } | sha256sum | awk '{print $1}')"
+        CFG_SIG="${EFFECTIVE_CC}|${EFFECTIVE_CFLAGS}|${COMPAT_CFG_FLAGS}|${CFG_INPUT_HASH}"
         NEED_CONFIGURE=true
         if [[ -x "config.status" && -f ".perffarm_cfg_sig" && "$(cat .perffarm_cfg_sig 2>/dev/null)" == "$CFG_SIG" ]]; then
             NEED_CONFIGURE=false
         fi
 
         if [[ "$NEED_CONFIGURE" == "true" ]]; then
+            make clean >/dev/null 2>&1 || true
+            find src -type l ! -exec test -e {} \; -delete 2>/dev/null || true
             # shellcheck disable=SC2086
-            ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}" $EFFECTIVE_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
+            if ! ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" $COMPAT_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1; then
+                log_info "Configure with full feature flags failed on this historical revision; retrying minimal configure..."
+                COMPAT_CFG_FLAGS="--without-readline --without-zlib"
+                CFG_SIG="${EFFECTIVE_CC}|${EFFECTIVE_CFLAGS}|${COMPAT_CFG_FLAGS}|${CFG_INPUT_HASH}"
+                # shellcheck disable=SC2086
+                ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" $COMPAT_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
+            fi
             echo "$CFG_SIG" > .perffarm_cfg_sig
         fi
 
         if ! make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1; then
             log_info "Incremental build encountered an error; running clean configure and build..."
             make distclean >/dev/null 2>&1 || true
+            find src -type l ! -exec test -e {} \; -delete 2>/dev/null || true
             # shellcheck disable=SC2086
-            ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="${CFLAGS:--O2 -g -fno-omit-frame-pointer}" $EFFECTIVE_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
-            echo "$CFG_SIG" > .perffarm_cfg_sig
-            make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1
+            if ! (./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" $COMPAT_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1 && \
+                  make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1); then
+                log_info "Retrying clean build with minimal configure flags (--without-readline --without-zlib) for historical revision compatibility..."
+                make distclean >/dev/null 2>&1 || true
+                find src -type l ! -exec test -e {} \; -delete 2>/dev/null || true
+                COMPAT_CFG_FLAGS="--without-readline --without-zlib"
+                CFG_SIG="${EFFECTIVE_CC}|${EFFECTIVE_CFLAGS}|${COMPAT_CFG_FLAGS}|${CFG_INPUT_HASH}"
+                # shellcheck disable=SC2086
+                ./configure --prefix="$WORKDIR/install" --enable-depend CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" $COMPAT_CFG_FLAGS >"$LOG_DIR/pg_configure.log" 2>&1
+                echo "$CFG_SIG" > .perffarm_cfg_sig
+                make -j"$BUILD_JOBS" >"$LOG_DIR/pg_build.log" 2>&1
+            else
+                echo "$CFG_SIG" > .perffarm_cfg_sig
+            fi
         fi
 
+        rm -rf "$WORKDIR/install"
         make install >"$LOG_DIR/pg_install.log" 2>&1
         if [[ -d "contrib/pg_stat_statements" ]]; then
             make -C contrib/pg_stat_statements -j"$BUILD_JOBS" install >>"$LOG_DIR/pg_install.log" 2>&1 || true
@@ -813,8 +852,8 @@ fi
 
 log_info "Building and installing pgbench4perffarm (contrib/pgbench + src/bin/pgbench) against $TARGET_PG_CONFIG..."
 make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" clean >"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 || true
-if ! (make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" all >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 && \
-      make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1); then
+if ! (make -C "$REPO_ROOT" -j"$BUILD_JOBS" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" all >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1 && \
+      make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" CC="$EFFECTIVE_CC" CFLAGS="$EFFECTIVE_CFLAGS" install >>"$LOG_DIR/pgbench4perffarm_build.log" 2>&1); then
     record_failed_build_and_exit "pgbench4perffarm build/install" "$LOG_DIR/pgbench4perffarm_build.log"
 fi
 
@@ -842,6 +881,11 @@ if [[ "$METRICS_PSQL" == "psql" && -x "$PG_PSQL" ]]; then
     METRICS_PSQL="$PG_PSQL"
 fi
 PG_VER_NUM="$("$TARGET_PG_CONFIG" --version | awk '{print $2}' | sed -E 's/^([0-9]+).*/\10000/')"
+if "$PG_INITDB" --help 2>&1 | grep -q -- '--waldir'; then
+    INITDB_WALDIR_OPT="--waldir"
+else
+    INITDB_WALDIR_OPT="--xlogdir"
+fi
 
 # Re-generate postgresql.animal.conf matching exact major version of target server
 PG_MAJOR="$(echo "$PG_VER_NUM" | sed -E 's/0000$//')"
@@ -900,14 +944,14 @@ if [[ "$CHECK_WORLD_MODE" == "full" ]]; then
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
     rm -f "$LOG_DIR/check_server.log"
-    "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
+    "$PG_INITDB" -D "$CHECK_PGDATA" "${INITDB_WALDIR_OPT}=$CHECK_PGWAL" --encoding=UTF8 --locale=C >/dev/null
     {
         echo "port = $CHECK_PGPORT"
         echo "unix_socket_directories = '/tmp'"
     } >> "$CHECK_PGDATA/postgresql.conf"
     "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
-    make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
+    make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/check_world.log" 2>&1 || CW_OK=false
     stop_local_check_server
     verify_check_server_log "$LOG_DIR/check_server.log" || CW_OK=false
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
@@ -917,14 +961,14 @@ elif [[ "$CHECK_WORLD_MODE" == "fast" ]]; then
     stop_local_check_server
     mkdir -p "$WORKDIR/tmp"
     rm -f "$LOG_DIR/check_server.log"
-    "$PG_INITDB" -D "$CHECK_PGDATA" --waldir="$CHECK_PGWAL" --encoding=UTF8 --locale=C --no-instructions >/dev/null
+    "$PG_INITDB" -D "$CHECK_PGDATA" "${INITDB_WALDIR_OPT}=$CHECK_PGWAL" --encoding=UTF8 --locale=C >/dev/null
     {
         echo "port = $CHECK_PGPORT"
         echo "unix_socket_directories = '/tmp'"
     } >> "$CHECK_PGDATA/postgresql.conf"
     "$PG_CTL" -D "$CHECK_PGDATA" -l "$LOG_DIR/check_server.log" -w start >/dev/null
     make -C "$REPO_ROOT/contrib/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" PGPORT="$CHECK_PGPORT" PGHOST="127.0.0.1" installcheck >"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
-    PROVE_TESTS="t/002_pgbench_no_server.pl" make -C "$REPO_ROOT/src/bin/pgbench" USE_PGXS=1 PG_CONFIG="$TARGET_PG_CONFIG" installcheck >>"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
+    PROVE_TESTS="t/002_pgbench_no_server.pl" make -C "$REPO_ROOT" PG_CONFIG="$TARGET_PG_CONFIG" tapcheck >>"$LOG_DIR/fast_check.log" 2>&1 || CW_OK=false
     stop_local_check_server
     verify_check_server_log "$LOG_DIR/check_server.log" || CW_OK=false
     CHECK_WORLD_STATUS="$( $CW_OK && echo "passed" || echo "failed" )"
@@ -954,8 +998,39 @@ import sys
 
 matrix = json.loads(open(matrix_file, encoding="utf-8").read())
 
+LEGACY_ALIASES = {
+    "pgbench-b": "pgbench-banking",
+    "pgbench-c": "pgbench-order",
+    "pgbench-e": "pgbench-brokerage",
+    "pgbench-h": "pgbench-analytics",
+    "pgbench-ds": "pgbench-retail",
+    "pgbench-graph-lsqb": "pgbench-graph-subgraph",
+    "pgbench-graph-snb-interactive": "pgbench-graph-social-interactive",
+    "pgbench-graph-snb-bi": "pgbench-graph-social-bi",
+    "pgbench-graph-finbench": "pgbench-graph-financial",
+    "pgbench-graph-graphalytics": "pgbench-graph-algorithms",
+    "pgbench-graph-sql-ud-lsqb": "pgbench-graph-sql-ud-subgraph",
+    "pgbench-graph-sql-ud-snb-interactive": "pgbench-graph-sql-ud-social-interactive",
+    "pgbench-graph-sql-ud-snb-bi": "pgbench-graph-sql-ud-social-bi",
+    "pgbench-graph-sql-ud-finbench": "pgbench-graph-sql-ud-financial",
+    "pgbench-graph-sql-ud-graphalytics": "pgbench-graph-sql-ud-algorithms",
+    "pgbench-graph-pgq-lsqb": "pgbench-graph-pgq-subgraph",
+    "pgbench-graph-pgq-snb-interactive": "pgbench-graph-pgq-social-interactive",
+    "pgbench-graph-pgq-snb-bi": "pgbench-graph-pgq-social-bi",
+    "pgbench-graph-pgq-finbench": "pgbench-graph-pgq-financial",
+    "pgbench-graph-pgq-graphalytics": "pgbench-graph-pgq-algorithms",
+    "pgbench-graph-plpgq-lsqb": "pgbench-graph-plpgq-subgraph",
+    "pgbench-graph-plpgq-snb-interactive": "pgbench-graph-plpgq-social-interactive",
+    "pgbench-graph-plpgq-snb-bi": "pgbench-graph-plpgq-social-bi",
+    "pgbench-graph-plpgq-finbench": "pgbench-graph-plpgq-financial",
+    "pgbench-graph-plpgq-graphalytics": "pgbench-graph-plpgq-algorithms",
+}
+
+def resolve_alias(n: str) -> str:
+    return LEGACY_ALIASES.get(n, n)
+
 def norm_name(s: str) -> str:
-    return (s or "").strip().lower().replace("_", "-")
+    return resolve_alias((s or "").strip().lower().replace("_", "-"))
 
 filters = [norm_name(x) for x in suite_filter.split(",") if x.strip()]
 allow_all = ("all" in filters) or (not filters)
@@ -1109,10 +1184,10 @@ stop_existing_bench_server
 run_on_server "rm -rf '$PGDATA_DIR' '$PGWAL_DIR' && mkdir -p \"\$(dirname '$PGDATA_DIR')\" \"\$(dirname '$PGWAL_DIR')\""
 
 log_info "Initializing fresh benchmark PostgreSQL cluster on server (data=$PGDATA_DIR, wal=$PGWAL_DIR)..."
-if [[ "$PGWAL_DIR" != "$PGDATA_DIR/pg_wal" ]]; then
-    run_on_server "'$PG_INITDB' -D '$PGDATA_DIR' --waldir='$PGWAL_DIR' --encoding=UTF8 --locale=C --no-instructions >/dev/null"
+if [[ "$PGWAL_DIR" != "$PGDATA_DIR/pg_wal" && "$PGWAL_DIR" != "$PGDATA_DIR/pg_xlog" ]]; then
+    run_on_server "'$PG_INITDB' -D '$PGDATA_DIR' '${INITDB_WALDIR_OPT}=$PGWAL_DIR' --encoding=UTF8 --locale=C >/dev/null"
 else
-    run_on_server "'$PG_INITDB' -D '$PGDATA_DIR' --encoding=UTF8 --locale=C --no-instructions >/dev/null"
+    run_on_server "'$PG_INITDB' -D '$PGDATA_DIR' --encoding=UTF8 --locale=C >/dev/null"
 fi
 
 # Allow network connections from client host when running across VMs
@@ -1415,7 +1490,11 @@ for idx in $(seq 0 $((TEST_GROUPS_PLANNED - 1))); do
         # 5d. CHECKPOINT & Reset Stats before each run on the prepared database
         "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" \
             -c "CHECKPOINT;" \
-            -c "SELECT pg_stat_reset(); SELECT pg_stat_reset_shared('bgwriter'); SELECT pg_stat_reset_shared('wal');" >/dev/null 2>&1 || true
+            -c "SELECT pg_stat_reset();" \
+            -c "SELECT pg_stat_reset_shared('bgwriter');" >/dev/null 2>&1 || true
+        if [[ "$PG_MAJOR" -ge 14 ]]; then
+            "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('wal');" >/dev/null 2>&1 || true
+        fi
         if [[ "$PG_MAJOR" -ge 16 ]]; then
             "$PG_PSQL" -X -q -h "$SERVER_HOST" -p "$PGPORT" -d "$BENCH_DB" -c "SELECT pg_stat_reset_shared('io');" >/dev/null 2>&1 || true
         fi

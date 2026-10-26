@@ -37,6 +37,17 @@ typedef enum DatasetCursorMode
 	CURSOR_SAMPLE
 } DatasetCursorMode;
 
+typedef enum PgBenchColLogicalType
+{
+	PGBENCH_COL_UNKNOWN = 0,
+	PGBENCH_COL_INT64,
+	PGBENCH_COL_FLOAT64,
+	PGBENCH_COL_NUMERIC,
+	PGBENCH_COL_BOOL,
+	PGBENCH_COL_STRING,
+	PGBENCH_COL_TIMESTAMP
+} PgBenchColLogicalType;
+
 typedef struct PgBenchDataset
 {
 	char	   *name;			/* Logical dataset identifier */
@@ -54,6 +65,8 @@ typedef struct PgBenchDataset
 	size_t		record_stride;	/* Fixed byte stride for FVECS/BVECS/IVECS, 0 for CSV/TSV */
 	uint64	   *row_offsets;	/* Byte offsets of line starts for CSV/TSV (total_rows + 1) */
 	uint64		cursor;			/* Lock-free global cursor for dataset_next_id / \dataset_bind */
+	PgBenchColLogicalType *col_types;	/* Optional logical column types from manifest */
+	int			num_col_types;
 } PgBenchDataset;
 
 extern int	num_copy_dataset_specs;
@@ -63,6 +76,8 @@ extern bool dataset_loading_from_config;
 extern void registerDataset(const char *name, DatasetFormat format, const char *filepath);
 extern void registerDatasetEx(const char *name, DatasetFormat format,
 							  bool force_header, const char *filepath);
+extern void setDatasetColumnTypes(PgBenchDataset *ds, int ncols,
+								  const PgBenchColLogicalType *types);
 extern void parseDatasetSpec(const char *spec);
 extern void parseVectorDatasetSpec(const char *spec);
 extern void parseVectorBaseSpec(const char *spec);

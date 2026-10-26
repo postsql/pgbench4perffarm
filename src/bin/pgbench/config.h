@@ -23,6 +23,8 @@ extern char *config_description;
 extern bool config_scripts_loaded;
 extern int	num_config_init_steps;
 extern Variables config_variables;
+extern char *export_dataset_dir;
+extern char *load_dataset_dir;
 
 /* Shared option state from pgbench.c */
 extern char *initialize_steps;
@@ -48,6 +50,8 @@ extern void loadConfigFile(const char *config_path,
 						   bool *initialization_option_set,
 						   bool *jobs_option_set);
 extern void runConfigInitSteps(Variables *cli_vars);
+extern void exportCanonicalDataset(const char *dir);
+extern void loadCanonicalDataset(const char *dir, bool load_tables);
 extern void writeConfigJsonObject(FILE *fp, int base_indent,
 								  bool include_init_steps);
 extern void dumpConfigFile(const char *dump_path);

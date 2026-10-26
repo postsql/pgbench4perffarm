@@ -1,0 +1,22 @@
+# PostgreSQL master semiannual commits (2 checkouts per year over the last 10 years, chronological order)
+8c035e55c4807dc5844f563dcbbc44ffe2fdd4d6  # [01] 2016-10-25T17:02:22-04:00 | 10devel | pg_dump: Simplify internal archive version handling
+9139aa19423b736470f669e566f8ef6a7f19b801  # [02] 2017-04-25T16:57:43-04:00 | 10devel | Allow ALTER TABLE ONLY on partitioned tables
+db6986f47c9531628d151d6bf760a2fe1214b19d  # [03] 2017-10-25T19:32:24-04:00 | 11devel | Fix libpq to not require user's home directory to exist.
+5602265f770f400a03b4a4ca22b3cd530c294bc2  # [04] 2018-04-25T16:01:58-04:00 | 11devel | Convert unused_oids and duplicate_oids to use Catalog.pm infrastructure.
+10074651e3355e2405015f6253602be8344bc829  # [05] 2018-10-25T09:46:00+09:00 | 12devel | Add pg_promote function
+a9ce839a31375a6c04189222706ae6b2abe96919  # [06] 2019-04-25T12:50:37-07:00 | 12devel | Sanitize line pointers within contrib/amcheck.
+2fc2a88e6722df40245d3ae2ec7f8fc1c6bf0596  # [07] 2019-10-25T21:37:14+02:00 | 13devel | Remove obsolete information schema tables
+7154aa16a64dd4afc2cbf02e7ce86dc6711a1087  # [08] 2020-04-25T16:45:20-07:00 | 13devel | Fix another minor page deletion buffer lock issue.
+ba9f18abd3650e385e9a35df7145a7c38af17e92  # [09] 2020-10-25T13:57:46-04:00 | 14devel | Fix corner case for a BEFORE ROW UPDATE trigger returning OLD.
+08a986966524e522914b96e4398a4bebf942b298  # [10] 2021-04-25T18:02:03-04:00 | 14devel | Update comments for rewriteTargetListIU().
+8781b0ce25e702ba4a4f032d00da7acdef8dbfe1  # [11] 2021-10-26T12:54:55+13:00 | 15devel | Reject huge_pages=on if shared_memory_type=sysv.
+b787c554c264cbed4de4eff2bb170a5224f0cfa5  # [12] 2022-04-25T15:47:55-04:00 | 15devel | Inhibit mingw CRT's auto-globbing of command line arguments
+13d53aa7a83383c9d1343e7d725e615f8678aea8  # [13] 2022-10-25T17:35:19-04:00 | 16devel | Doc/improve confusing, inefficient tests to locate CTID variable.
+828e93a6f2dbf4bc7a24bc3ce166c34879eeb8b1  # [14] 2023-04-26T10:43:53+12:00 | 16devel | Remove bogus #include added by d4e71df6d75.
+bddc2f7480374023218427a0185145a127207c28  # [15] 2023-10-25T17:34:51-04:00 | 17devel | Doc: remove misleading info about ecpg's CONNECT/DISCONNECT DEFAULT.
+205db0114e03496f1d6febf276374900b6314e67  # [16] 2024-04-25T14:58:59-04:00 | 17devel | pg_combinebackup: Detect checksum mismatches and document limitation.
+3aa2373c114124f62e80016d8939331fcb4d5586  # [17] 2024-10-25T16:31:08-07:00 | 18devel | Refactor the code to create a pg_locale_t into new function.
+039bfc457e436dc5c6b1d6ef996048ae19ff480d  # [18] 2025-04-25T13:31:25-04:00 | 18devel | aio: Improve debug logging around waiting for IOs
+39dcfda2d23ac39f14ecf4b83e01eae85d07d9e5  # [19] 2025-10-26T10:59:50+13:00 | 19devel | Fix incorrect logic for caching ResultRelInfos for triggers
+7d7e58feef21e7781e8e99a960fae4d6d5a2a927  # [20] 2026-04-25T20:23:03+02:00 | 19devel | Don't use INT64_FORMAT in translatable string
+dfd7ede529f288639760444a9c69f3f7bb65450c  # [21] 2026-10-25T15:14:13-04:00 | 20devel | Fix leaked hash scans in pg_listening_channels().

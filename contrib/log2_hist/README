@@ -1,0 +1,49 @@
+contrib/log2_hist/README
+========================
+
+`log2_hist` is a PostgreSQL base type extension implementing a 64-bucket
+run-length-encoded (RLE) log2(V+1) histogram of 64-bit unsigned counters
+(`uint64[64]`), indexed over 0-based buckets `0..63`.
+
+Key Features
+------------
+1. **64-Bucket Mapping (`0..63`)**:
+   - Bucket index is computed as `64 - clz64(V)`:
+     - `V = 0` -> bucket `0`
+     - `V = 1` -> bucket `1`
+     - `V = 2..3` -> bucket `2`
+     - `V = 4..7` -> bucket `3`
+     - `V = 2^(b-1) .. 2^b - 1` -> bucket `b` (`1..63`, up to `INT64_MAX`)
+   - Negative inputs (`V < 0`) raise `ERRCODE_INVALID_PARAMETER_VALUE` by
+     default, or clamp to bucket `0` when the 2nd argument `clamp_negative`
+     is `true` (or when `SET log2_hist.clamp_negative = on` is set).
+
+2. **RLE Binary Storage (`varlena`)**:
+   - Skips empty (`0`) buckets using `(skip_zeros, run_len)` pairs followed
+     by 8-byte-aligned `uint64` counts.
+
+3. **Canonical Text Format**:
+   - `'[(nr-of-zeros){count[,count]*}]'` (e.g. `'[]'`, `'[(0){5,10}]'`,
+     `'[(3){10}(1){20}]'`). Non-canonical inputs are automatically normalized.
+
+4. **0-Based (`0..63`) Subscripting & Live-Range `bigint[]` Casts**:
+   - Direct subscripting `h[b]` (`0..63`) returns the `bigint` counter for
+     bucket `b` (`0` for empty buckets, `NULL` out of bounds), and supports
+     slice fetch `h[lo:hi]` and element assignment `h[b] = val`.
+   - `h::bigint[]` returns a 1-D `bigint[]` whose lower/upper bounds span
+     only the live (first non-zero to last non-zero) 0-based bucket range
+     `[b_first:b_last]` (or `'{}'` when empty).
+   - `log2_hist_buckets(h)` / `log2_hist_to_array(h, true, 0)` returns the
+     full 64-element `[0:63]` `bigint[]`.
+   - `arr::log2_hist` compresses any 1-D `bigint[]` of length <= 64 into a
+     `log2_hist`, respecting 0-based `lbound` (and accepting 64-element
+     1-based `[1:64]` SQL arrays).
+
+5. **Branchless / SIMD Saturating Arithmetic & Parallel-Safe Aggregates**:
+   - `log2_hist_merge(a, b)` / `log2_hist_add(a, b)` / `a + b` saturates bucket sums at `UINT64_MAX`.
+   - Parallel-safe `log2_hist_agg(val [, clamp_negative])` and
+     `log2_hist_merge_agg(h)` operate on a flat 512-byte in-memory state.
+
+6. **Analytics & B-Tree / Hash Operator Classes**:
+   - `log2_hist_total_count(h)`, `log2_hist_min_bucket(h)`, `log2_hist_max_bucket(h)`, and `log2_hist_percentile(h, p)`.
+   - Default `btree` (`log2_hist_btree_ops`) and `hash` (`log2_hist_hash_ops`) operator classes supporting `SELECT DISTINCT`, `GROUP BY`, `ORDER BY`, and B-tree/Hash indexes.

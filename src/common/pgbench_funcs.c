@@ -19,12 +19,21 @@
 #endif
 
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 
 #include "common/pgbench_funcs.h"
+#if defined(__has_include) && __has_include("port/pg_bitutils.h")
 #include "port/pg_bitutils.h"
+#else
+static inline int
+pg_leftmost_one_pos64(uint64 word)
+{
+	return 63 - __builtin_clzll(word);
+}
+#endif
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 150000
+#if !(defined(__has_include) && __has_include("common/pg_prng.h"))
 static inline uint64
 rotl(uint64 x, int bits)
 {
@@ -116,9 +125,9 @@ pg_prng_double(pg_prng_state *state)
 
 	return ldexp((double) (v >> (64 - 52)), -52);
 }
-#endif							/* PG_VERSION_NUM < 150000 */
+#endif							/* !__has_include("common/pg_prng.h") */
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 160000
+#if !(defined(HAVE_PRNG_NORMAL) ? HAVE_PRNG_NORMAL : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 160000))
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -136,7 +145,7 @@ pg_prng_double_normal(pg_prng_state *state)
 	z0 = sqrt(-2.0 * log(u1)) * sin(2.0 * M_PI * u2);
 	return z0;
 }
-#endif							/* PG_VERSION_NUM < 160000 */
+#endif							/* !HAVE_PRNG_NORMAL */
 
 /*
  * random number generator: uniform distribution from min to max inclusive.
@@ -1666,7 +1675,7 @@ pgbench_parse_vector_into(const char *str, float *out, int expected_dim)
 }
 
 /*
- * Generate an LDBC-style attribute-correlated (homophily + power-law degree)
+ * Generate an attribute-correlated community (homophily + power-law degree)
  * target vertex ID in [1, num_vertices] for a given source vertex src_id.
  *
  * With probability homophily_prob, picks a target vertex belonging to the
@@ -1675,7 +1684,7 @@ pgbench_parse_vector_into(const char *str, float *out, int expected_dim)
  * Never returns a self-loop (dst != src_id when src_id is in [1, num_vertices]).
  */
 bool
-pgbench_ldbc_correlated_edge(pg_prng_state *state,
+pgbench_community_correlated_edge(pg_prng_state *state,
 							 int64 src_id,
 							 int64 num_vertices,
 							 int64 num_communities,
@@ -1738,7 +1747,7 @@ pgbench_ldbc_correlated_edge(pg_prng_state *state,
 }
 
 /*
- * Generate an LDBC-style flashmob timestamp in [base_ts_us, base_ts_us + span_us - 1].
+ * Generate a burst timestamp in [base_ts_us, base_ts_us + span_us - 1].
  *
  * With probability spike_prob (when num_spikes > 0), selects one of num_spikes
  * deterministic burst centers (weighted by Zipfian amplitude) and adds a
@@ -1746,7 +1755,7 @@ pgbench_ldbc_correlated_edge(pg_prng_state *state,
  * uniformly across [0, span_us - 1].
  */
 bool
-pgbench_ldbc_flashmob_ts(pg_prng_state *state,
+pgbench_burst_timestamp(pg_prng_state *state,
 						 int64 base_ts_us,
 						 int64 span_us,
 						 int64 num_spikes,

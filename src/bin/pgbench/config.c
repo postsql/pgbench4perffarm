@@ -43,6 +43,8 @@ char	   *config_description = NULL;
 bool		config_scripts_loaded = false;
 int			num_config_init_steps = 0;
 Variables	config_variables;
+char	   *export_dataset_dir = NULL;
+char	   *load_dataset_dir = NULL;
 
 /*-------------------------------------------------------------------------
  * In-memory JSON DOM representation built via common/jsonapi.c
@@ -290,7 +292,7 @@ cjson_object_field_start(void *state, char *fname, bool isnull)
 		st->pending_key[st->depth - 1] = pg_strdup(fname ? fname : "");
 		st->pending_key_line[st->depth - 1] = st->lex->line_number;
 	}
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+#if !(defined(HAVE_JSON_LEX_OWNS) ? HAVE_JSON_LEX_OWNS : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000))
 	if (fname != NULL)
 		pfree(fname);
 #endif
@@ -306,7 +308,7 @@ cjson_scalar(void *state, char *token, JsonTokenType tokentype)
 
 	if (st->too_deep)
 	{
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+#if !(defined(HAVE_JSON_LEX_OWNS) ? HAVE_JSON_LEX_OWNS : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000))
 		if (token != NULL)
 			pfree(token);
 #endif
@@ -337,7 +339,7 @@ cjson_scalar(void *state, char *token, JsonTokenType tokentype)
 			break;
 	}
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+#if !(defined(HAVE_JSON_LEX_OWNS) ? HAVE_JSON_LEX_OWNS : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000))
 	if (token != NULL)
 		pfree(token);
 #endif
@@ -543,7 +545,7 @@ parseConfigJsonFile(const char *config_path)
 
 #if !defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 170000
 	lex = makeJsonLexContextCstringLen(NULL, clean_buf, nread, PG_UTF8, true);
-#if !defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000
+#if defined(HAVE_JSON_LEX_OWNS) ? HAVE_JSON_LEX_OWNS : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000)
 	setJsonLexContextOwnsTokens(lex, true);
 #endif
 #else
@@ -2172,6 +2174,7 @@ runConfigInitSteps(Variables *cli_vars)
 {
 	PgBenchConn *con;
 	int			global_scale = scale;
+	bool		loaded_canonical = false;
 
 	resolveHostAddrOnce();
 	con = doConnect();
@@ -2191,6 +2194,20 @@ runConfigInitSteps(Variables *cli_vars)
 		TState	   *step_threads_arr;
 		int			nclients_dealt = 0;
 		bool		step_failed = false;
+
+		if (load_dataset_dir != NULL && step->name != NULL &&
+			(pg_strcasecmp(step->name, "data") == 0 ||
+			 pg_strcasecmp(step->name, "init") == 0))
+		{
+			if (!loaded_canonical)
+			{
+				pg_log_info("replacing initialization step %d/%d (%s) with canonical dataset load from \"%s\"",
+							s + 1, num_config_init_steps, step->name, load_dataset_dir);
+				loadCanonicalDataset(load_dataset_dir, true);
+				loaded_canonical = true;
+			}
+			continue;
+		}
 
 		if (step->builtin_init != NULL)
 		{
@@ -2219,6 +2236,7 @@ runConfigInitSteps(Variables *cli_vars)
 		{
 			Command   **commands = sql_script[i].commands;
 
+			coalesce_spanner_ddl_commands(commands);
 			for (int j = 0; commands[j] != NULL; j++)
 				if (commands[j]->type == SQL_COMMAND)
 					postprocess_sql_command(commands[j]);
@@ -2382,6 +2400,12 @@ runConfigInitSteps(Variables *cli_vars)
 		nthreads = saved_nthreads;
 		active_driver->finish(con);
 	}
+
+	if (load_dataset_dir != NULL && !loaded_canonical)
+		loadCanonicalDataset(load_dataset_dir, true);
+
+	if (export_dataset_dir != NULL)
+		exportCanonicalDataset(export_dataset_dir);
 }
 
 /*-------------------------------------------------------------------------
@@ -3130,3 +3154,842 @@ dumpConfigFile(const char *dump_path)
 	if (fp != stdout)
 		fclose(fp);
 }
+
+/*-------------------------------------------------------------------------
+ * Canonical Dataset Export & Bulk Load (--export-dataset / --load-dataset)
+ *-------------------------------------------------------------------------
+ */
+
+typedef struct PgBenchSha256Ctx
+{
+	uint32		state[8];
+	uint64		bitlen;
+	uint8		data[64];
+	uint32		datalen;
+} PgBenchSha256Ctx;
+
+#define SHA256_ROTR(a,b) (((a) >> (b)) | ((a) << (32 - (b))))
+#define SHA256_CH(x,y,z) (((x) & (y)) ^ (~(x) & (z)))
+#define SHA256_MAJ(x,y,z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
+#define SHA256_EP0(x) (SHA256_ROTR(x,2) ^ SHA256_ROTR(x,13) ^ SHA256_ROTR(x,22))
+#define SHA256_EP1(x) (SHA256_ROTR(x,6) ^ SHA256_ROTR(x,11) ^ SHA256_ROTR(x,25))
+#define SHA256_SIG0(x) (SHA256_ROTR(x,7) ^ SHA256_ROTR(x,18) ^ ((x) >> 3))
+#define SHA256_SIG1(x) (SHA256_ROTR(x,17) ^ SHA256_ROTR(x,19) ^ ((x) >> 10))
+
+static const uint32 sha256_k[64] = {
+	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+	0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+	0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+	0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+	0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+	0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+	0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+	0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+	0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+	0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+	0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+	0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+	0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+	0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+	0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+	0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+};
+
+static void
+pgbench_sha256_transform(PgBenchSha256Ctx *ctx, const uint8 data[64])
+{
+	uint32		a, b, c, d, e, f, g, h, t1, t2, m[64];
+
+	for (int i = 0, j = 0; i < 16; ++i, j += 4)
+		m[i] = ((uint32) data[j] << 24) | ((uint32) data[j + 1] << 16) |
+			((uint32) data[j + 2] << 8) | ((uint32) data[j + 3]);
+	for (int i = 16; i < 64; ++i)
+		m[i] = SHA256_SIG1(m[i - 2]) + m[i - 7] + SHA256_SIG0(m[i - 15]) + m[i - 16];
+
+	a = ctx->state[0];
+	b = ctx->state[1];
+	c = ctx->state[2];
+	d = ctx->state[3];
+	e = ctx->state[4];
+	f = ctx->state[5];
+	g = ctx->state[6];
+	h = ctx->state[7];
+
+	for (int i = 0; i < 64; ++i)
+	{
+		t1 = h + SHA256_EP1(e) + SHA256_CH(e, f, g) + sha256_k[i] + m[i];
+		t2 = SHA256_EP0(a) + SHA256_MAJ(a, b, c);
+		h = g;
+		g = f;
+		f = e;
+		e = d + t1;
+		d = c;
+		c = b;
+		b = a;
+		a = t1 + t2;
+	}
+
+	ctx->state[0] += a;
+	ctx->state[1] += b;
+	ctx->state[2] += c;
+	ctx->state[3] += d;
+	ctx->state[4] += e;
+	ctx->state[5] += f;
+	ctx->state[6] += g;
+	ctx->state[7] += h;
+}
+
+static void
+pgbench_sha256_init(PgBenchSha256Ctx *ctx)
+{
+	ctx->datalen = 0;
+	ctx->bitlen = 0;
+	ctx->state[0] = 0x6a09e667;
+	ctx->state[1] = 0xbb67ae85;
+	ctx->state[2] = 0x3c6ef372;
+	ctx->state[3] = 0xa54ff53a;
+	ctx->state[4] = 0x510e527f;
+	ctx->state[5] = 0x9b05688c;
+	ctx->state[6] = 0x1f83d9ab;
+	ctx->state[7] = 0x5be0cd19;
+}
+
+static void
+pgbench_sha256_update(PgBenchSha256Ctx *ctx, const uint8 *data, size_t len)
+{
+	for (size_t i = 0; i < len; ++i)
+	{
+		ctx->data[ctx->datalen] = data[i];
+		ctx->datalen++;
+		if (ctx->datalen == 64)
+		{
+			pgbench_sha256_transform(ctx, ctx->data);
+			ctx->bitlen += 512;
+			ctx->datalen = 0;
+		}
+	}
+}
+
+static void
+pgbench_sha256_final_hex(PgBenchSha256Ctx *ctx, char out_hex[65])
+{
+	uint32		i = ctx->datalen;
+
+	if (ctx->datalen < 56)
+	{
+		ctx->data[i++] = 0x80;
+		while (i < 56)
+			ctx->data[i++] = 0x00;
+	}
+	else
+	{
+		ctx->data[i++] = 0x80;
+		while (i < 64)
+			ctx->data[i++] = 0x00;
+		pgbench_sha256_transform(ctx, ctx->data);
+		memset(ctx->data, 0, 56);
+	}
+
+	ctx->bitlen += (uint64) ctx->datalen * 8;
+	ctx->data[63] = (uint8) (ctx->bitlen);
+	ctx->data[62] = (uint8) (ctx->bitlen >> 8);
+	ctx->data[61] = (uint8) (ctx->bitlen >> 16);
+	ctx->data[60] = (uint8) (ctx->bitlen >> 24);
+	ctx->data[59] = (uint8) (ctx->bitlen >> 32);
+	ctx->data[58] = (uint8) (ctx->bitlen >> 40);
+	ctx->data[57] = (uint8) (ctx->bitlen >> 48);
+	ctx->data[56] = (uint8) (ctx->bitlen >> 56);
+	pgbench_sha256_transform(ctx, ctx->data);
+
+	for (int j = 0; j < 8; j++)
+		snprintf(out_hex + (j * 8), 9, "%08x", ctx->state[j]);
+	out_hex[64] = '\0';
+}
+
+static void
+ensureDirectoryExists(const char *path)
+{
+	if (mkdir(path, 0755) != 0 && errno != EEXIST)
+		pg_fatal("could not create directory \"%s\": %m", path);
+}
+
+static const char *
+pgTypeToLogicalType(const char *typname)
+{
+	if (typname == NULL)
+		return "STRING";
+	if (strcmp(typname, "int2") == 0 ||
+		strcmp(typname, "int4") == 0 ||
+		strcmp(typname, "int8") == 0 ||
+		strcmp(typname, "oid") == 0)
+		return "INT64";
+	if (strcmp(typname, "float4") == 0 ||
+		strcmp(typname, "float8") == 0)
+		return "FLOAT64";
+	if (strcmp(typname, "numeric") == 0)
+		return "NUMERIC";
+	if (strcmp(typname, "bool") == 0)
+		return "BOOL";
+	if (strcmp(typname, "timestamptz") == 0 ||
+		strcmp(typname, "timestamp") == 0 ||
+		strcmp(typname, "date") == 0)
+		return "TIMESTAMP";
+	return "STRING";
+}
+
+static PgBenchColLogicalType
+logicalTypeFromString(const char *type_str)
+{
+	if (type_str == NULL)
+		return PGBENCH_COL_UNKNOWN;
+	if (pg_strcasecmp(type_str, "INT64") == 0)
+		return PGBENCH_COL_INT64;
+	if (pg_strcasecmp(type_str, "FLOAT64") == 0)
+		return PGBENCH_COL_FLOAT64;
+	if (pg_strcasecmp(type_str, "NUMERIC") == 0)
+		return PGBENCH_COL_NUMERIC;
+	if (pg_strcasecmp(type_str, "BOOL") == 0)
+		return PGBENCH_COL_BOOL;
+	if (pg_strcasecmp(type_str, "TIMESTAMP") == 0)
+		return PGBENCH_COL_TIMESTAMP;
+	if (pg_strcasecmp(type_str, "STRING") == 0)
+		return PGBENCH_COL_STRING;
+	return PGBENCH_COL_UNKNOWN;
+}
+
+static void
+writeReservoirJsonFile(const char *dir, const char *res_name,
+					   uint64 capacity, uint64 count, const int64 *vals,
+					   FILE *manifest_fp, bool *first_res)
+{
+	char	   *rel_path = psprintf("reservoirs/%s.json", res_name);
+	char	   *full_path = psprintf("%s/%s", dir, rel_path);
+	FILE	   *rfp = fopen(full_path, "w");
+
+	if (rfp == NULL)
+		pg_fatal("could not open reservoir export file \"%s\": %m", full_path);
+
+	fprintf(rfp, "{\n  \"name\": ");
+	fprintConfigJsonStr(rfp, res_name);
+	fprintf(rfp, ",\n  \"capacity\": " UINT64_FORMAT ",\n  \"count\": " UINT64_FORMAT ",\n  \"values\": [",
+			capacity, count);
+	for (uint64 i = 0; i < count; i++)
+	{
+		if (i > 0)
+			fputs(", ", rfp);
+		fprintf(rfp, INT64_FORMAT, vals[i]);
+	}
+	fputs("]\n}\n", rfp);
+	fclose(rfp);
+
+	if (!*first_res)
+		fputs(",\n", manifest_fp);
+	*first_res = false;
+	fprintf(manifest_fp, "    {\n      \"name\": ");
+	fprintConfigJsonStr(manifest_fp, res_name);
+	fprintf(manifest_fp, ",\n      \"file\": ");
+	fprintConfigJsonStr(manifest_fp, rel_path);
+	fprintf(manifest_fp, ",\n      \"capacity\": " UINT64_FORMAT ",\n      \"count\": " UINT64_FORMAT "\n    }",
+			capacity, count);
+
+	pg_free(rel_path);
+	pg_free(full_path);
+}
+
+void
+exportCanonicalDataset(const char *dir)
+{
+	PgBenchConn *con;
+	PGconn	   *pgcon;
+	PGresult   *tbl_res;
+	PGresult   *seq_res;
+	int			ntables;
+	int			nseqs;
+	char	   *tables_dir;
+	char	   *reservoirs_dir;
+	char	   *manifest_path;
+	FILE	   *mfp;
+	bool		has_persons_table = false;
+	bool		has_messages_table = false;
+	bool		exported_persons_res = false;
+	bool		exported_messages_res = false;
+	bool		first_res = true;
+
+	if (active_driver != &postgres_driver)
+		pg_fatal("--export-dataset requires the PostgreSQL driver (--driver=postgres)");
+
+	ensureDirectoryExists(dir);
+	tables_dir = psprintf("%s/tables", dir);
+	reservoirs_dir = psprintf("%s/reservoirs", dir);
+	ensureDirectoryExists(tables_dir);
+	ensureDirectoryExists(reservoirs_dir);
+	pg_free(tables_dir);
+	pg_free(reservoirs_dir);
+
+	resolveHostAddrOnce();
+	con = doConnect();
+	if (con == NULL)
+		pg_fatal("could not connect to PostgreSQL for --export-dataset");
+	pgcon = (PGconn *) con;
+
+	{
+		PGresult   *tz_res = PQexec(pgcon, "SET TIME ZONE 'UTC'");
+
+		PQclear(tz_res);
+	}
+
+	tbl_res = PQexec(pgcon,
+					 "SELECT c.relname, c.oid::text "
+					 "FROM pg_catalog.pg_class c "
+					 "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
+					 "WHERE n.nspname = 'public' AND c.relkind = 'r' "
+					 "  AND c.relname LIKE 'pgbench_%' "
+					 "ORDER BY c.oid ASC");
+	if (PQresultStatus(tbl_res) != PGRES_TUPLES_OK)
+		pg_fatal("could not query pgbench tables for export: %s", PQerrorMessage(pgcon));
+
+	ntables = PQntuples(tbl_res);
+	if (ntables == 0)
+		pg_fatal("no public.pgbench_* tables found to export");
+
+	manifest_path = psprintf("%s/manifest.json", dir);
+	mfp = fopen(manifest_path, "w");
+	if (mfp == NULL)
+		pg_fatal("could not open \"%s\" for writing: %m", manifest_path);
+
+	fputs("{\n", mfp);
+	fputs("  \"format_version\": 1,\n", mfp);
+	fputs("  \"suite\": ", mfp);
+	fprintConfigJsonStr(mfp, config_suite_name ? config_suite_name : "pgbench");
+	fputs(",\n", mfp);
+	fprintf(mfp, "  \"scale\": %d,\n", scale);
+	fprintf(mfp, "  \"random_seed\": " INT64_FORMAT ",\n", random_seed);
+	fputs("  \"tables\": [\n", mfp);
+
+	for (int t = 0; t < ntables; t++)
+	{
+		const char *tbl_name = PQgetvalue(tbl_res, t, 0);
+		const char *tbl_oid = PQgetvalue(tbl_res, t, 1);
+		char	   *rel_csv = psprintf("tables/%02d_%s.csv", t + 1, tbl_name);
+		char	   *full_csv = psprintf("%s/%s", dir, rel_csv);
+		PQExpBufferData q;
+		PQExpBufferData sel_list;
+		PQExpBufferData order_list;
+		PGresult   *col_res;
+		PGresult   *pk_res;
+		PGresult   *copy_res;
+		int			ncols;
+		int			npks;
+		FILE	   *cfp;
+		PgBenchSha256Ctx sha_ctx;
+		char		sha_hex[65];
+		int64		row_count = 0;
+
+		if (strcmp(tbl_name, "pgbench_graph_persons") == 0)
+			has_persons_table = true;
+		else if (strcmp(tbl_name, "pgbench_graph_messages") == 0)
+			has_messages_table = true;
+
+		initPQExpBuffer(&q);
+		printfPQExpBuffer(&q,
+						  "SELECT a.attname, t.typname "
+						  "FROM pg_catalog.pg_attribute a "
+						  "JOIN pg_catalog.pg_type t ON t.oid = a.atttypid "
+						  "WHERE a.attrelid = %s::oid AND a.attnum > 0 AND NOT a.attisdropped "
+						  "ORDER BY a.attnum ASC",
+						  tbl_oid);
+		col_res = PQexec(pgcon, q.data);
+		if (PQresultStatus(col_res) != PGRES_TUPLES_OK)
+			pg_fatal("could not query columns of table \"%s\": %s",
+					 tbl_name, PQerrorMessage(pgcon));
+		ncols = PQntuples(col_res);
+
+		printfPQExpBuffer(&q,
+						  "SELECT a.attname "
+						  "FROM pg_catalog.pg_index i "
+						  "JOIN LATERAL unnest(i.indkey) WITH ORDINALITY AS k(attnum, ord) ON true "
+						  "JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum "
+						  "WHERE i.indrelid = %s::oid AND i.indisprimary "
+						  "ORDER BY k.ord ASC",
+						  tbl_oid);
+		pk_res = PQexec(pgcon, q.data);
+		if (PQresultStatus(pk_res) != PGRES_TUPLES_OK)
+			pg_fatal("could not query primary key of table \"%s\": %s",
+					 tbl_name, PQerrorMessage(pgcon));
+		npks = PQntuples(pk_res);
+
+		initPQExpBuffer(&sel_list);
+		for (int c = 0; c < ncols; c++)
+		{
+			const char *cname = PQgetvalue(col_res, c, 0);
+			const char *tname = PQgetvalue(col_res, c, 1);
+
+			if (c > 0)
+				appendPQExpBufferStr(&sel_list, ", ");
+			if (strcmp(tname, "timestamptz") == 0 || strcmp(tname, "timestamp") == 0)
+				appendPQExpBuffer(&sel_list,
+								  "to_char(%s AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS %s",
+								  cname, cname);
+			else
+				appendPQExpBufferStr(&sel_list, cname);
+		}
+
+		initPQExpBuffer(&order_list);
+		if (npks > 0)
+		{
+			for (int k = 0; k < npks; k++)
+			{
+				if (k > 0)
+					appendPQExpBufferStr(&order_list, ", ");
+				appendPQExpBufferStr(&order_list, PQgetvalue(pk_res, k, 0));
+			}
+		}
+		else if (ncols >= 2)
+			appendPQExpBufferStr(&order_list, "1, 2");
+		else
+			appendPQExpBufferStr(&order_list, "1");
+
+		printfPQExpBuffer(&q,
+						  "COPY (SELECT %s FROM %s ORDER BY %s) TO STDOUT WITH (FORMAT csv, HEADER true)",
+						  sel_list.data, tbl_name, order_list.data);
+
+		cfp = fopen(full_csv, "wb");
+		if (cfp == NULL)
+			pg_fatal("could not open CSV export file \"%s\": %m", full_csv);
+
+		pgbench_sha256_init(&sha_ctx);
+		copy_res = PQexec(pgcon, q.data);
+		if (PQresultStatus(copy_res) != PGRES_COPY_OUT)
+			pg_fatal("COPY TO STDOUT failed for \"%s\": %s",
+					 tbl_name, PQerrorMessage(pgcon));
+		PQclear(copy_res);
+
+		for (;;)
+		{
+			char	   *copy_buf = NULL;
+			int			ret = PQgetCopyData(pgcon, &copy_buf, 0);
+
+			if (ret > 0)
+			{
+				if (fwrite(copy_buf, 1, (size_t) ret, cfp) != (size_t) ret)
+					pg_fatal("could not write to \"%s\": %m", full_csv);
+				pgbench_sha256_update(&sha_ctx, (const uint8 *) copy_buf, (size_t) ret);
+				row_count++;
+				PQfreemem(copy_buf);
+			}
+			else if (ret == -1)
+				break;
+			else
+				pg_fatal("PQgetCopyData failed for \"%s\": %s",
+						 tbl_name, PQerrorMessage(pgcon));
+		}
+		copy_res = PQgetResult(pgcon);
+		if (PQresultStatus(copy_res) != PGRES_COMMAND_OK)
+			pg_fatal("COPY completion failed for \"%s\": %s",
+					 tbl_name, PQerrorMessage(pgcon));
+		PQclear(copy_res);
+		fclose(cfp);
+
+		if (row_count > 0)
+			row_count--;		/* subtract CSV header line */
+		pgbench_sha256_final_hex(&sha_ctx, sha_hex);
+
+		fprintf(mfp, "    {\n      \"name\": ");
+		fprintConfigJsonStr(mfp, tbl_name);
+		fprintf(mfp, ",\n      \"file\": ");
+		fprintConfigJsonStr(mfp, rel_csv);
+		fprintf(mfp, ",\n      \"rows\": " INT64_FORMAT ",\n      \"sha256\": \"%s\",\n",
+				row_count, sha_hex);
+
+		fputs("      \"primary_key\": [", mfp);
+		for (int k = 0; k < npks; k++)
+		{
+			if (k > 0)
+				fputs(", ", mfp);
+			fprintConfigJsonStr(mfp, PQgetvalue(pk_res, k, 0));
+		}
+		fputs("],\n      \"columns\": [", mfp);
+		for (int c = 0; c < ncols; c++)
+		{
+			if (c > 0)
+				fputs(", ", mfp);
+			fprintConfigJsonStr(mfp, PQgetvalue(col_res, c, 0));
+		}
+		fputs("],\n      \"column_types\": [", mfp);
+		for (int c = 0; c < ncols; c++)
+		{
+			if (c > 0)
+				fputs(", ", mfp);
+			fprintConfigJsonStr(mfp, pgTypeToLogicalType(PQgetvalue(col_res, c, 1)));
+		}
+		fprintf(mfp, "]\n    }%s\n", (t + 1 < ntables) ? "," : "");
+
+		pg_log_info("exported table %d/%d: %s (" INT64_FORMAT " rows, sha256=%.12s...)",
+					t + 1, ntables, tbl_name, row_count, sha_hex);
+
+		PQclear(col_res);
+		PQclear(pk_res);
+		termPQExpBuffer(&q);
+		termPQExpBuffer(&sel_list);
+		termPQExpBuffer(&order_list);
+		pg_free(rel_csv);
+		pg_free(full_csv);
+	}
+	fputs("  ],\n", mfp);
+	PQclear(tbl_res);
+
+	/* Export sequences */
+	{
+		char	   *seq_query = psprintf(
+			"SELECT sequencename, "
+			"GREATEST(COALESCE(last_value, start_value, 1), " INT64_FORMAT ")::text "
+			"FROM pg_catalog.pg_sequences "
+			"WHERE schemaname = 'public' AND sequencename LIKE 'pgbench_%%' "
+			"ORDER BY sequencename ASC",
+			(int64) 1000000 * (scale > 0 ? scale : 1));
+
+		seq_res = PQexec(pgcon, seq_query);
+		pg_free(seq_query);
+	}
+	if (PQresultStatus(seq_res) != PGRES_TUPLES_OK)
+		pg_fatal("could not query pg_sequences: %s", PQerrorMessage(pgcon));
+	nseqs = PQntuples(seq_res);
+
+	fputs("  \"sequences\": [\n", mfp);
+	for (int s = 0; s < nseqs; s++)
+	{
+		const char *sname = PQgetvalue(seq_res, s, 0);
+		const char *sval = PQgetvalue(seq_res, s, 1);
+
+		fputs("    { \"name\": ", mfp);
+		fprintConfigJsonStr(mfp, sname);
+		fprintf(mfp, ", \"last_value\": %s }%s\n",
+				(sval && *sval) ? sval : "1",
+				(s + 1 < nseqs) ? "," : "");
+	}
+	fputs("  ],\n", mfp);
+	PQclear(seq_res);
+
+	/* Export reservoirs */
+	fputs("  \"reservoirs\": [\n", mfp);
+	for (int r = 0; r < getNumReservoirs(); r++)
+	{
+		const PgBenchReservoir *res = getReservoirByIndex(r);
+		uint64		cnt = (res->valid_count < res->capacity) ? res->valid_count : res->capacity;
+
+		if (cnt == 0)
+			continue;
+		if (strcmp(res->name, "persons") == 0)
+			exported_persons_res = true;
+		else if (strcmp(res->name, "messages") == 0)
+			exported_messages_res = true;
+
+		writeReservoirJsonFile(dir, res->name, res->capacity, cnt,
+							   res->slots, mfp, &first_res);
+	}
+
+	if (!exported_persons_res && has_persons_table)
+	{
+		PGresult   *pres = PQexec(pgcon,
+								  "SELECT id FROM pgbench_graph_persons "
+								  "ORDER BY id ASC LIMIT 65536");
+
+		if (PQresultStatus(pres) == PGRES_TUPLES_OK && PQntuples(pres) > 0)
+		{
+			int			nr = PQntuples(pres);
+			int64	   *vals = pg_malloc_array(int64, nr);
+
+			for (int i = 0; i < nr; i++)
+				vals[i] = strtoi64(PQgetvalue(pres, i, 0), NULL, 10);
+			writeReservoirJsonFile(dir, "persons", 65536, (uint64) nr,
+								   vals, mfp, &first_res);
+			pg_free(vals);
+		}
+		PQclear(pres);
+	}
+
+	if (!exported_messages_res && has_messages_table)
+	{
+		PGresult   *mres = PQexec(pgcon,
+								  "SELECT id FROM pgbench_graph_messages "
+								  "ORDER BY id ASC LIMIT 65536");
+
+		if (PQresultStatus(mres) == PGRES_TUPLES_OK && PQntuples(mres) > 0)
+		{
+			int			nr = PQntuples(mres);
+			int64	   *vals = pg_malloc_array(int64, nr);
+
+			for (int i = 0; i < nr; i++)
+				vals[i] = strtoi64(PQgetvalue(mres, i, 0), NULL, 10);
+			writeReservoirJsonFile(dir, "messages", 65536, (uint64) nr,
+								   vals, mfp, &first_res);
+			pg_free(vals);
+		}
+		PQclear(mres);
+	}
+
+	fputs("\n  ]\n}\n", mfp);
+	fclose(mfp);
+	active_driver->finish(con);
+
+	pg_log_info("canonical dataset exported to \"%s\" (%d tables, %d sequences)",
+				dir, ntables, nseqs);
+	pg_free(manifest_path);
+}
+
+void
+loadCanonicalDataset(const char *dir, bool load_tables)
+{
+	char	   *manifest_path = psprintf("%s/manifest.json", dir);
+	ConfigJsonNode *root = parseConfigJsonFile(manifest_path);
+	ConfigJsonField *f_scale = findObjectField(root, "scale");
+	ConfigJsonField *f_tables = findObjectField(root, "tables");
+	ConfigJsonField *f_seqs = findObjectField(root, "sequences");
+	ConfigJsonField *f_res = findObjectField(root, "reservoirs");
+
+	if (!scale_given && f_scale != NULL && f_scale->val->type == CJSON_NUMBER)
+	{
+		int			mscale = atoi(f_scale->val->scalar_str);
+
+		if (mscale > 0)
+			scale = mscale;
+	}
+
+	/* Load reservoirs into memory */
+	if (f_res != NULL && f_res->val->type == CJSON_ARRAY)
+	{
+		for (int i = 0; i < f_res->val->nelems; i++)
+		{
+			ConfigJsonNode *robj = f_res->val->elems[i];
+			ConfigJsonField *f_rname;
+			ConfigJsonField *f_rfile;
+			ConfigJsonField *f_rcap;
+			char	   *rpath;
+			ConfigJsonNode *rroot;
+			ConfigJsonField *f_vals;
+			PgBenchReservoir *res;
+			uint64		cap = 65536;
+
+			if (robj->type != CJSON_OBJECT)
+				continue;
+			f_rname = findObjectField(robj, "name");
+			f_rfile = findObjectField(robj, "file");
+			f_rcap = findObjectField(robj, "capacity");
+			if (f_rname == NULL || f_rname->val->type != CJSON_STRING ||
+				f_rfile == NULL || f_rfile->val->type != CJSON_STRING)
+				continue;
+			if (f_rcap != NULL && f_rcap->val->type == CJSON_NUMBER)
+				cap = (uint64) strtou64(f_rcap->val->scalar_str, NULL, 10);
+
+			registerOrUpdateReservoir(f_rname->val->scalar_str, cap);
+			res = findReservoir(f_rname->val->scalar_str);
+			if (res != NULL)
+			{
+				res->write_idx = 0;
+				res->valid_count = 0;
+			}
+
+			rpath = psprintf("%s/%s", dir, f_rfile->val->scalar_str);
+			rroot = parseConfigJsonFile(rpath);
+			f_vals = findObjectField(rroot, "values");
+			if (f_vals != NULL && f_vals->val->type == CJSON_ARRAY)
+			{
+				for (int v = 0; v < f_vals->val->nelems; v++)
+				{
+					ConfigJsonNode *vnode = f_vals->val->elems[v];
+
+					if (vnode->type == CJSON_NUMBER && vnode->scalar_str != NULL)
+					{
+						int64		ival = strtoi64(vnode->scalar_str, NULL, 10);
+
+						reservoirPush(f_rname->val->scalar_str, ival);
+					}
+				}
+			}
+			freeJsonNode(rroot);
+			pg_free(rpath);
+		}
+	}
+
+	if (load_tables && f_tables != NULL && f_tables->val->type == CJSON_ARRAY)
+	{
+		PgBenchConn *con;
+		int			ntables = f_tables->val->nelems;
+		int			saved_nthreads = nthreads;
+		int			saved_num_copy_specs = num_copy_dataset_specs;
+
+		resolveHostAddrOnce();
+		con = doConnect();
+		if (con == NULL)
+			pg_fatal("could not connect to database for --load-dataset");
+
+		/*
+		 * If no init_steps ran before loadCanonicalDataset, clear existing rows
+		 * in reverse dependency order so reloading into an existing database
+		 * produces an exact canonical state.
+		 */
+		if (num_config_init_steps == 0)
+		{
+			for (int t = ntables - 1; t >= 0; t--)
+			{
+				ConfigJsonNode *tobj = f_tables->val->elems[t];
+				ConfigJsonField *f_tname = findObjectField(tobj, "name");
+
+				if (f_tname != NULL && f_tname->val->type == CJSON_STRING)
+				{
+					char	   *del_sql = psprintf("DELETE FROM %s WHERE true",
+												   f_tname->val->scalar_str);
+					PgBenchResult *dres = active_driver->exec_sync(con, del_sql);
+
+					active_driver->clear_result(dres);
+					pg_free(del_sql);
+				}
+			}
+		}
+
+		num_copy_dataset_specs = 0;
+		for (int t = 0; t < ntables; t++)
+		{
+			ConfigJsonNode *tobj = f_tables->val->elems[t];
+			ConfigJsonField *f_tname = findObjectField(tobj, "name");
+			ConfigJsonField *f_tfile = findObjectField(tobj, "file");
+			ConfigJsonField *f_trows = findObjectField(tobj, "rows");
+			ConfigJsonField *f_tsha = findObjectField(tobj, "sha256");
+			ConfigJsonField *f_tcols = findObjectField(tobj, "columns");
+			ConfigJsonField *f_ttypes = findObjectField(tobj, "column_types");
+			char	   *ds_name;
+			char	   *csv_path;
+			PgBenchDataset *ds;
+			PQExpBufferData copy_spec;
+
+			if (tobj->type != CJSON_OBJECT ||
+				f_tname == NULL || f_tname->val->type != CJSON_STRING ||
+				f_tfile == NULL || f_tfile->val->type != CJSON_STRING)
+				continue;
+
+			ds_name = psprintf("__canon_%02d_%s", t + 1, f_tname->val->scalar_str);
+			csv_path = psprintf("%s/%s", dir, f_tfile->val->scalar_str);
+			registerDatasetEx(ds_name, DATASET_CSV, true, csv_path);
+			ds = findDataset(ds_name);
+			if (ds == NULL)
+				pg_fatal("failed to register canonical CSV dataset \"%s\"", csv_path);
+
+			/* Verify SHA-256 and row count */
+			if (f_tsha != NULL && f_tsha->val->type == CJSON_STRING &&
+				ds->raw_data != NULL)
+			{
+				PgBenchSha256Ctx sha_ctx;
+				char		actual_sha[65];
+
+				pgbench_sha256_init(&sha_ctx);
+				pgbench_sha256_update(&sha_ctx, ds->raw_data, ds->raw_size);
+				pgbench_sha256_final_hex(&sha_ctx, actual_sha);
+				if (pg_strcasecmp(actual_sha, f_tsha->val->scalar_str) != 0)
+					pg_fatal("SHA-256 mismatch for \"%s\": expected %s, got %s",
+							 csv_path, f_tsha->val->scalar_str, actual_sha);
+			}
+			if (f_trows != NULL && f_trows->val->type == CJSON_NUMBER)
+			{
+				int64		expected_rows = strtoi64(f_trows->val->scalar_str, NULL, 10);
+
+				if (ds->total_rows != expected_rows)
+					pg_fatal("row count mismatch for \"%s\": manifest expects " INT64_FORMAT ", got " INT64_FORMAT,
+							 csv_path, expected_rows, ds->total_rows);
+			}
+
+			if (f_ttypes != NULL && f_ttypes->val->type == CJSON_ARRAY &&
+				f_ttypes->val->nelems > 0)
+			{
+				int			nt = f_ttypes->val->nelems;
+				PgBenchColLogicalType *ctypes = pg_malloc_array(PgBenchColLogicalType, nt);
+
+				for (int c = 0; c < nt; c++)
+				{
+					ConfigJsonNode *tn = f_ttypes->val->elems[c];
+
+					ctypes[c] = (tn->type == CJSON_STRING) ?
+						logicalTypeFromString(tn->scalar_str) : PGBENCH_COL_UNKNOWN;
+				}
+				setDatasetColumnTypes(ds, nt, ctypes);
+				pg_free(ctypes);
+			}
+
+			initPQExpBuffer(&copy_spec);
+			appendPQExpBuffer(&copy_spec, "%s:%s", ds_name, f_tname->val->scalar_str);
+			if (f_tcols != NULL && f_tcols->val->type == CJSON_ARRAY &&
+				f_tcols->val->nelems > 0)
+			{
+				appendPQExpBufferChar(&copy_spec, '(');
+				for (int c = 0; c < f_tcols->val->nelems; c++)
+				{
+					ConfigJsonNode *cn = f_tcols->val->elems[c];
+
+					if (c > 0)
+						appendPQExpBufferStr(&copy_spec, ", ");
+					if (cn->type == CJSON_STRING && cn->scalar_str != NULL)
+						appendPQExpBufferStr(&copy_spec, cn->scalar_str);
+				}
+				appendPQExpBufferChar(&copy_spec, ')');
+			}
+			registerCopyDatasetSpec(copy_spec.data);
+			termPQExpBuffer(&copy_spec);
+			pg_free(ds_name);
+			pg_free(csv_path);
+		}
+
+		nthreads = copy_nthreads;
+		runRegisteredCopyDatasets(con);
+		nthreads = saved_nthreads;
+		num_copy_dataset_specs = saved_num_copy_specs;
+
+		/* Restore sequence watermarks on PostgreSQL / DuckDB */
+		if (f_seqs != NULL && f_seqs->val->type == CJSON_ARRAY)
+		{
+			for (int s = 0; s < f_seqs->val->nelems; s++)
+			{
+				ConfigJsonNode *sobj = f_seqs->val->elems[s];
+				ConfigJsonField *f_sname = findObjectField(sobj, "name");
+				ConfigJsonField *f_sval = findObjectField(sobj, "last_value");
+
+				if (sobj->type != CJSON_OBJECT ||
+					f_sname == NULL || f_sname->val->type != CJSON_STRING ||
+					f_sval == NULL || f_sval->val->type != CJSON_NUMBER)
+					continue;
+
+				if (active_driver == &postgres_driver)
+				{
+					char	   *seq_sql = psprintf("SELECT pg_catalog.setval('%s', %s, true)",
+												   f_sname->val->scalar_str,
+												   f_sval->val->scalar_str);
+					PgBenchResult *sres = active_driver->exec_sync(con, seq_sql);
+
+					active_driver->clear_result(sres);
+					pg_free(seq_sql);
+				}
+				else if (active_driver == &quack_driver)
+				{
+					int64		next_val = strtoi64(f_sval->val->scalar_str, NULL, 10) + 1;
+					char	   *drop_sql = psprintf("DROP SEQUENCE IF EXISTS %s",
+													f_sname->val->scalar_str);
+					char	   *create_sql = psprintf("CREATE SEQUENCE %s START WITH " INT64_FORMAT,
+													  f_sname->val->scalar_str, next_val);
+					PgBenchResult *sres;
+
+					sres = active_driver->exec_sync(con, drop_sql);
+					active_driver->clear_result(sres);
+					sres = active_driver->exec_sync(con, create_sql);
+					active_driver->clear_result(sres);
+					pg_free(drop_sql);
+					pg_free(create_sql);
+				}
+			}
+		}
+
+		active_driver->finish(con);
+		pg_log_info("canonical dataset loaded from \"%s\" (%d tables)", dir, ntables);
+	}
+
+	freeJsonNode(root);
+	pg_free(manifest_path);
+}
+

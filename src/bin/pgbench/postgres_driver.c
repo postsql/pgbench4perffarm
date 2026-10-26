@@ -153,6 +153,25 @@ pg_shutdown_global(void)
 
 #define PG_PARAMS_ARRAY_SIZE 8
 
+static int	pg11_supports_call = -1;
+
+static bool
+pg_conn_supports_call(PGconn *conn)
+{
+	int			sver;
+
+	if (conn == NULL)
+		return true;
+	sver = PQserverVersion(conn);
+	if (sver >= 120000)
+		return true;
+	if (sver > 0 && sver < 110000)
+		return false;
+	if (sver >= 110000 && pg11_supports_call >= 0)
+		return pg11_supports_call != 0;
+	return true;
+}
+
 static PgBenchConn *
 pg_connect_sync(const char *host, const char *port,
 				const char *user, const char *dbname)
@@ -212,6 +231,24 @@ pg_connect_sync(const char *host, const char *port,
 		pg_log_error("%s", PQerrorMessage(conn));
 		PQfinish(conn);
 		return NULL;
+	}
+
+	if (pg11_supports_call < 0)
+	{
+		int			sver = PQserverVersion(conn);
+
+		if (sver >= 110000 && sver < 120000)
+		{
+			PGresult   *res = PQexec(conn,
+									 "SELECT 1 FROM pg_attribute "
+									 "WHERE attrelid = 'pg_proc'::regclass "
+									 "AND attname = 'prokind'");
+
+			pg11_supports_call = (res != NULL &&
+								  PQresultStatus(res) == PGRES_TUPLES_OK &&
+								  PQntuples(res) > 0) ? 1 : 0;
+			PQclear(res);
+		}
 	}
 
 	return (PgBenchConn *) conn;
@@ -374,18 +411,55 @@ pg_reset_cancel_conn(void)
 	ResetCancelConn();
 }
 
+static char *
+pg_maybe_rewrite_call_sql(PGconn *conn, const char *sql)
+{
+	const char *p;
+	size_t		prefix_ws;
+	size_t		rest_len;
+	char	   *buf;
+
+	if (sql == NULL || pg_conn_supports_call(conn))
+		return NULL;
+
+	p = sql;
+	while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+		p++;
+
+	if (pg_strncasecmp(p, "CALL ", 5) != 0 &&
+		pg_strncasecmp(p, "CALL\t", 5) != 0)
+		return NULL;
+
+	prefix_ws = (size_t) (p - sql);
+	rest_len = strlen(p + 4);
+	buf = pg_malloc(prefix_ws + 6 + rest_len + 1);
+	if (prefix_ws > 0)
+		memcpy(buf, sql, prefix_ws);
+	memcpy(buf + prefix_ws, "SELECT", 6);
+	memcpy(buf + prefix_ws + 6, p + 4, rest_len + 1);
+	return buf;
+}
+
 static PgBenchResult *
 pg_exec_sync(PgBenchConn *conn, const char *sql)
 {
-	return (PgBenchResult *) PQexec((PGconn *) conn, sql);
+	char	   *rewritten = pg_maybe_rewrite_call_sql((PGconn *) conn, sql);
+	PGresult   *res = PQexec((PGconn *) conn, rewritten ? rewritten : sql);
+
+	pg_free(rewritten);
+	return (PgBenchResult *) res;
 }
 
 static PgBenchResult *
 pg_prepare_sync(PgBenchConn *conn, const char *stmt_name,
 				const char *sql, int nparams)
 {
-	return (PgBenchResult *) PQprepare((PGconn *) conn, stmt_name,
-									   sql, nparams, NULL);
+	char	   *rewritten = pg_maybe_rewrite_call_sql((PGconn *) conn, sql);
+	PGresult   *res = PQprepare((PGconn *) conn, stmt_name,
+								rewritten ? rewritten : sql, nparams, NULL);
+
+	pg_free(rewritten);
+	return (PgBenchResult *) res;
 }
 
 static char *
@@ -403,7 +477,11 @@ pg_free_mem(void *ptr)
 static bool
 pg_send_query(PgBenchConn *conn, const char *sql)
 {
-	return PQsendQuery((PGconn *) conn, sql) == 1;
+	char	   *rewritten = pg_maybe_rewrite_call_sql((PGconn *) conn, sql);
+	int			rc = PQsendQuery((PGconn *) conn, rewritten ? rewritten : sql);
+
+	pg_free(rewritten);
+	return rc == 1;
 }
 
 static bool
@@ -411,16 +489,26 @@ pg_send_query_params(PgBenchConn *conn, const char *sql, int nparams,
 					 const char *const *param_texts,
 					 const struct Variable *const *param_vars)
 {
+	char	   *rewritten = pg_maybe_rewrite_call_sql((PGconn *) conn, sql);
+	int			rc;
+
 	(void) param_vars;
-	return PQsendQueryParams((PGconn *) conn, sql, nparams, NULL,
-							 param_texts, NULL, NULL, 0) == 1;
+	rc = PQsendQueryParams((PGconn *) conn, rewritten ? rewritten : sql,
+						   nparams, NULL, param_texts, NULL, NULL, 0);
+	pg_free(rewritten);
+	return rc == 1;
 }
 
 static bool
 pg_send_prepare(PgBenchConn *conn, const char *stmt_name,
 				const char *sql, int nparams)
 {
-	return PQsendPrepare((PGconn *) conn, stmt_name, sql, nparams, NULL) == 1;
+	char	   *rewritten = pg_maybe_rewrite_call_sql((PGconn *) conn, sql);
+	int			rc = PQsendPrepare((PGconn *) conn, stmt_name,
+								   rewritten ? rewritten : sql, nparams, NULL);
+
+	pg_free(rewritten);
+	return rc == 1;
 }
 
 static bool

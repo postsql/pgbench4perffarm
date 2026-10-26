@@ -462,7 +462,7 @@ expr_scanner_get_substring(PsqlScanState state,
 	return result;
 }
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+#if !(defined(HAVE_PSQL_SCAN_LOC) ? HAVE_PSQL_SCAN_LOC : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000))
 void
 psql_scan_get_location(PsqlScanState state, int *lineno, int *offset)
 {

@@ -9,6 +9,7 @@ src/bin/pgbench/exprparse.h
 src/bin/pgbench/exprscan.c
 src/bin/pgbench/pgbench_funcs.c
 src/bin/pgbench/tmp_check/
+src/bin/pgbench/log/
 contrib/pgbench/pgbench_funcs.c
 contrib/pgbench/results/
 contrib/pgbench/regression.diffs

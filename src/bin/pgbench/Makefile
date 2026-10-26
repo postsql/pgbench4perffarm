@@ -30,13 +30,22 @@ ifdef USE_PGXS
 PROGRAM = pgbench
 TAP_TESTS = 1
 OBJS += pgbench_funcs.o
-PG_CPPFLAGS = -DFRONTEND -I. -I$(srcdir) -I$(srcdir)/../../include -I$(libpq_srcdir)
+PG_CONFIG ?= pg_config
+HAS_PRNG_NORMAL := $(shell grep -q pg_prng_double_normal "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/common/pg_prng.h" 2>/dev/null && echo 1 || echo 0)
+HAS_PG_INIT_TIMING := $(shell grep -q pg_initialize_timing "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/portability/instr_time.h" 2>/dev/null && echo 1 || echo 0)
+HAS_PSQL_SCAN_LOC := $(shell grep -q psql_scan_get_location "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/fe_utils/psqlscan.h" 2>/dev/null && echo 1 || echo 0)
+HAS_JSON_LEX_OWNS := $(shell grep -q setJsonLexContextOwnsTokens "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/common/jsonapi.h" 2>/dev/null && echo 1 || echo 0)
+HAS_OPENSSL := $(shell printf '#include <openssl/ssl.h>\nint main(void){return 0;}\n' | $(if $(CC),$(CC),cc) -xc - -lssl -lcrypto -o /dev/null 2>/dev/null && echo 1 || echo 0)
+ifeq ($(HAS_OPENSSL),1)
+OPENSSL_CPPFLAGS = -DUSE_OPENSSL
+OPENSSL_LIBS = -lssl -lcrypto
+endif
+PG_CPPFLAGS = -DFRONTEND -I. -I$(srcdir) -I$(srcdir)/../../include -I$(libpq_srcdir) -DHAVE_PRNG_NORMAL=$(HAS_PRNG_NORMAL) -DHAVE_PG_INIT_TIMING=$(HAS_PG_INIT_TIMING) -DHAVE_PSQL_SCAN_LOC=$(HAS_PSQL_SCAN_LOC) -DHAVE_JSON_LEX_OWNS=$(HAS_JSON_LEX_OWNS) $(OPENSSL_CPPFLAGS)
 PG_LIBS_INTERNAL = -L$(libdir) -lpgfeutils $(libpq_pgport)
-PG_LIBS = $(PTHREAD_LIBS) -lm
+PG_LIBS = $(PTHREAD_LIBS) $(OPENSSL_LIBS) -lm
 EXTRA_CLEAN = exprparse.h exprparse.c exprscan.c pgbench_funcs.c tmp_check
 override with_llvm = no
 
-PG_CONFIG ?= pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
@@ -109,6 +118,10 @@ else
 override CPPFLAGS += -DFD_SETSIZE=1024
 endif
 LIBS += $(PTHREAD_LIBS)
+ifneq ($(wildcard /usr/include/openssl/ssl.h),)
+override CPPFLAGS += -DUSE_OPENSSL
+LIBS += -lssl -lcrypto
+endif
 
 
 all: pgbench

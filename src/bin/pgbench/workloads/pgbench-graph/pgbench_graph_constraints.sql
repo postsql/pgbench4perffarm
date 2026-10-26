@@ -1,5 +1,17 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark designed
+ * for database performance research and regression testing. While modeled
+ * after graph traversal patterns published by the Graph Data Council (LDBC),
+ * this is NOT an LDBC Benchmark, is NOT an implementation of an LDBC Benchmark,
+ * and these results are NOT LDBC Benchmark Results.
+ * LDBC, LDBC Benchmark, and LDBC Benchmark Results are registered trademarks
+ * of the Graph Data Council. Distributed under CC-BY 4.0 attribution terms.
+ */
+
 --
--- pgbench-graph (Unified LDBC Social Network & FinBench Graph Workload Suite)
+-- pgbench-graph (Unified Social Network & Financial Graph Workload Suite)
 -- Primary Keys, Adjacency Indexes, and Statistics
 --
 
@@ -149,9 +161,3 @@ ANALYZE pgbench_fin_transfers;
 ANALYZE pgbench_fin_loans;
 ANALYZE pgbench_fin_mediums;
 ANALYZE pgbench_fin_sign_ins;
-
-SELECT setval('pgbench_graph_person_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_persons)), false);
-SELECT setval('pgbench_graph_forum_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_forums)), false);
-SELECT setval('pgbench_graph_msg_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_graph_messages)), false);
-SELECT setval('pgbench_fin_transfer_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_fin_transfers)), false);
-SELECT setval('pgbench_fin_loan_seq', GREATEST(100000, (SELECT COALESCE(MAX(id), 0) + 1 FROM pgbench_fin_loans)), false);

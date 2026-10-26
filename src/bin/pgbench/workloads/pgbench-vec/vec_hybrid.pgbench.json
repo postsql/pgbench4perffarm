@@ -59,6 +59,6 @@
     "total:r_prefilter:recall>=0.90",
     "total:r_postfilter:recall>=0.40",
     "total:r_multivec:recall>=0.85",
-    "total:p95<=5000ms"
+    "total:p95<=100ms"
   ]
 }

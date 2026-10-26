@@ -1,5 +1,17 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark designed
+ * for database performance research and regression testing. While modeled
+ * after graph traversal patterns published by the Graph Data Council (LDBC),
+ * this is NOT an LDBC Benchmark, is NOT an implementation of an LDBC Benchmark,
+ * and these results are NOT LDBC Benchmark Results.
+ * LDBC, LDBC Benchmark, and LDBC Benchmark Results are registered trademarks
+ * of the Graph Data Council. Distributed under CC-BY 4.0 attribution terms.
+ */
+
 --
--- pgbench-graph (Unified LDBC Social Network & FinBench Graph Workload Suite)
+-- pgbench-graph (Unified Social Network & Financial Graph Workload Suite)
 -- Parallel In-Database Data Generation Script
 --
 -- Usage:
@@ -62,7 +74,7 @@ SELECT p,
   FROM generate_series(:client_id + 1, :persons_per_scale * :scale, :num_workers) AS p
   CROSS JOIN generate_series(1, 2) AS k;
 
--- 5. Bidirectional knows edges using LDBC homophily + power-law degree generator
+-- 5. Bidirectional knows edges using community homophily + power-law degree generator
 INSERT INTO pgbench_graph_knows (src_id, dst_id, weight, created_ts)
 SELECT DISTINCT
        edges.a,
@@ -71,7 +83,7 @@ SELECT DISTINCT
        1700000000000000::bigint + LEAST(edges.a, edges.b) * 1000 + GREATEST(edges.a, edges.b)
   FROM (
       SELECT p AS src,
-             pgbench.ldbc_correlated_edge(
+             pgbench.community_correlated_edge(
                  p,
                  (:persons_per_scale * :scale)::bigint,
                  10::bigint,
@@ -104,7 +116,7 @@ SELECT 1 + ((p + m * 3) % (20 * :scale)),
 
 -- 7. Messages: Top-level Posts (id = (p-1)*2 + 1, parent_message_id IS NULL)
 --    and Comment Replies (id = (p-1)*2 + 2, parent_message_id = prior Post)
---    with LDBC flashmob timestamp spikes
+--    with burst timestamp spikes
 INSERT INTO pgbench_graph_messages (
     id, creator_id, forum_id, parent_message_id, country_id, content, length, created_ts
 )
@@ -129,7 +141,7 @@ SELECT msg_id,
                  WHEN m = 1 THEN pgbench.format_string('Post #%d by person %d: %s', m, p, pgbench.random_astring(16, 48))
                  ELSE pgbench.format_string('Reply #%d by person %d: %s', m, p, pgbench.random_astring(12, 32))
              END AS content_txt,
-             pgbench.ldbc_flashmob_ts(
+             pgbench.burst_timestamp(
                  1700000000000000::bigint,
                  86400000000::bigint,
                  6::bigint,
@@ -155,7 +167,7 @@ SELECT (p - 1) * 2 + m,
   CROSS JOIN generate_series(1, 2) AS m
   CROSS JOIN generate_series(1, 2) AS t;
 
--- 9. LDBC FinBench Financial Graph Entities & Multi-Edges
+-- 9. Financial Graph Entities & Multi-Edges
 INSERT INTO pgbench_fin_accounts (id, owner_id, owner_type, is_blocked, balance, created_ts)
 SELECT p,
        p,
@@ -193,7 +205,7 @@ SELECT (p - 1) * 3 + k,
        CASE
            WHEN k = 1 THEN 1 + (p % (:persons_per_scale * :scale))
            WHEN k = 2 THEN 1 + ((p + 1) % (:persons_per_scale * :scale))
-           ELSE pgbench.ldbc_correlated_edge(
+           ELSE pgbench.community_correlated_edge(
                p, (:persons_per_scale * :scale)::bigint, 8::bigint, 0.70::float8, (99 + k)::bigint
            )
        END,

@@ -6,12 +6,12 @@ by standard industry database benchmarks, implemented using pgbench's scripting
 features (\try ... \catch, \sleep, \if, \gset, \gset_meta, --group, --sla,
 --json-report, and the contrib/pgbench SQL helper extension):
 
-  pgbench-b/     pgbench-b (modernized database-function based banking workload)
-  pgbench-c/     pgbench-c (TPC-C-inspired OLTP order-entry workload)
-  pgbench-e/     pgbench-e (TPC-E-inspired financial brokerage OLTP workload)
-  pgbench-h/     pgbench-h (TPC-H-inspired decision support / ad-hoc analytical queries + refresh)
-  pgbench-ds/    pgbench-ds (TPC-DS-inspired multi-channel retail decision support + maintenance)
-  pgbench-htap/  pgbench-htap (CH-benCHmark-inspired hybrid HTAP combining pgbench-c OLTP + analytical OLAP)
+  pgbench-banking/     pgbench-banking (modernized database-function based banking workload)
+  pgbench-order/     pgbench-order (TPC-C-inspired OLTP order-entry workload)
+  pgbench-brokerage/     pgbench-brokerage (TPC-E-inspired financial brokerage OLTP workload)
+  pgbench-analytics/     pgbench-analytics (TPC-H-inspired decision support / ad-hoc analytical queries + refresh)
+  pgbench-retail/    pgbench-retail (TPC-DS-inspired multi-channel retail decision support + maintenance)
+  pgbench-htap/  pgbench-htap (CH-benCHmark-inspired hybrid HTAP combining pgbench-order OLTP + analytical OLAP)
   pgbench-vec/   pgbench-vec (Vector similarity search, hybrid filtered RAG, and Recall@K telemetry)
   pgbench-graph/ pgbench-graph (LDBC-inspired social network graph traversal, reservoirs, and causal watermarks)
 
@@ -31,11 +31,11 @@ benchmark ratings, strict naming, metric, and disclosure conventions are observe
   * Suite Naming:
     - We avoid using trademarked prefixes or standalone marks ("TPC", "CH-benCHmark",
       "LDBC", "VecBench"). Instead, suites are named descriptively after the project
-      and domain: pgbench-b, pgbench-c, pgbench-e, pgbench-h, pgbench-ds, pgbench-htap,
+      and domain: pgbench-banking, pgbench-order, pgbench-brokerage, pgbench-analytics, pgbench-retail, pgbench-htap,
       pgbench-graph, and pgbench-vec.
   * Metric Naming:
-    - We strictly avoid trademarked council performance metrics such as tpmC (Transactions
-      per Minute C), QphH (Composite Query-per-Hour), or "LDBC Benchmark Results" (which
+    - We strictly avoid trademarked council performance metrics such as nopm (Transactions
+      per Minute C), qph (Composite Query-per-Hour), or "LDBC Benchmark Results" (which
       is a registered trademark of the Graph Data Council).
     - Instead, we report generic, standard engineering metrics:
       - Throughput: Transactions per Second (TPS), Completed Queries per Minute (QPM),
@@ -56,7 +56,7 @@ benchmark ratings, strict naming, metric, and disclosure conventions are observe
 
 All suites generate initial synthetic data entirely in the database using generate_series()
 and deterministic pseudo-random functions from the contrib/pgbench extension (pgbench.random,
-pgbench.random_vector, pgbench.planted_vector, pgbench.ldbc_correlated_edge, etc.).
+pgbench.random_vector, pgbench.planted_vector, pgbench.community_correlated_edge, etc.).
 No external generator binaries, flat files, or unverified dependencies are required.
 
 
@@ -82,10 +82,10 @@ using the built-in :client_id variable and -D num_workers=<N>:
 
 To initialize with 4 parallel workers at scale 4:
 
-  pgbench -n -f workloads/pgbench-c/pgbench_c_schema.sql
+  pgbench -n -f workloads/pgbench-order/pgbench_order_schema.sql
   pgbench -n -c 4 -j 4 -t 1 -D scale=4 -D num_workers=4 \
-          -f workloads/pgbench-c/pgbench_c_init.sql
-  pgbench -n -f workloads/pgbench-c/pgbench_c_constraints.sql
+          -f workloads/pgbench-order/pgbench_order_init.sql
+  pgbench -n -f workloads/pgbench-order/pgbench_order_constraints.sql
 
 If -D num_workers is omitted, num_workers defaults to 1 (single-client load).
 During automated testing or quick functional verification, small density
@@ -102,212 +102,213 @@ scripts and weights, client groups (`groups`), shared reservoirs (`reservoirs`),
 variables, and SLA compliance rules (`sla`).
 
   * Multi-stage initialization in a single command (works from any directory):
-      pgbench --config=workloads/pgbench-c/pgbench_c.pgbench.json -i
+      pgbench --config=workloads/pgbench-order/pgbench_order.pgbench.json -i
 
   * Execute the workload with optional CLI overrides:
-      pgbench --config=workloads/pgbench-c/pgbench_c.pgbench.json \
-              -c 16 -j 4 -T 60 --json-report=pgbench_c_results.json
+      pgbench --config=workloads/pgbench-order/pgbench_order.pgbench.json \
+              -c 16 -j 4 -T 60 --json-report=pgbench_order_results.json
 
   * Replay any prior `--json-report` output directly:
-      pgbench --config=pgbench_c_results.json -T 30
+      pgbench --config=pgbench_order_results.json -T 30
 
   * Export effective configuration (combining `--config` and CLI flags):
-      pgbench --config=workloads/pgbench-c/pgbench_c.pgbench.json \
-              -c 32 -j 8 --dump-config=custom_c.pgbench.json
+      pgbench --config=workloads/pgbench-order/pgbench_order.pgbench.json \
+              -c 32 -j 8 --dump-config=custom_order.pgbench.json
 
 Ready-to-run `.pgbench.json` files provided:
-  * workloads/pgbench-b/pgbench_b.pgbench.json
-  * workloads/pgbench-c/pgbench_c.pgbench.json
-  * workloads/pgbench-e/pgbench_e.pgbench.json
-  * workloads/pgbench-h/pgbench_h.pgbench.json
-  * workloads/pgbench-ds/pgbench_ds.pgbench.json
+  * workloads/pgbench-banking/pgbench_banking.pgbench.json
+  * workloads/pgbench-order/pgbench_order.pgbench.json
+  * workloads/pgbench-brokerage/pgbench_brokerage.pgbench.json
+  * workloads/pgbench-analytics/pgbench_analytics.pgbench.json
+  * workloads/pgbench-retail/pgbench_retail.pgbench.json
   * workloads/pgbench-htap/pgbench_htap.pgbench.json
   * workloads/pgbench-vec/{vec_hybrid,vec_aging}.pgbench.json
-  * workloads/pgbench-graph/{lsqb,snb_interactive,snb_bi,finbench,graphalytics}.pgbench.json
-  * workloads/pgbench-graph-sql-ud/{lsqb,snb_interactive,snb_bi,finbench,graphalytics}.pgbench.json
-  * workloads/pgbench-graph-pgq/{lsqb,snb_interactive,snb_bi,finbench,graphalytics}.pgbench.json
+  * workloads/pgbench-graph/{subgraph,social_interactive,social_bi,financial,algorithms}.pgbench.json
+  * workloads/pgbench-graph-sql-ud/{subgraph,social_interactive,social_bi,financial,algorithms}.pgbench.json
+  * workloads/pgbench-graph-pgq/{subgraph,social_interactive,social_bi,financial,algorithms}.pgbench.json
+  * workloads/pgbench-graph-plpgq/{subgraph,social_interactive,social_bi,financial,algorithms}.pgbench.json
 
 
-0. pgbench-b (workloads/pgbench-b/)
+0. pgbench-banking (workloads/pgbench-banking/)
 -----------------------------------
 
 Modeled after the classic Wisconsin banking benchmark specification and pgbench's
 original embedded banking transactions, but modernized to execute all transaction
-operations inside server-side database stored procedures (pgbench_b_transaction
-and pgbench_b_simple_update). This eliminates multi-roundtrip network latency,
+operations inside server-side database stored procedures (pgbench_banking_transaction
+and pgbench_banking_simple_update). This eliminates multi-roundtrip network latency,
 exercises PostgreSQL's stored procedure engine, and runs cleanly under default
 autocommit mode without client-side transaction overhead.
 
 Files:
-  pgbench_b_schema.sql         Standard tables (pgbench_branches, tellers, accounts,
-                               history) + stored procedures (pgbench_b_transaction,
-                               pgbench_b_simple_update)
-  pgbench_b_init.sql           Parallel in-database data generator partitioned across
+  pgbench_banking_schema.sql         Standard tables (pgbench_branches, tellers, accounts,
+                               history) + stored procedures (pgbench_banking_transaction,
+                               pgbench_banking_simple_update)
+  pgbench_banking_init.sql           Parallel in-database data generator partitioned across
                                workers using generate_series() and contrib/pgbench
-  pgbench_b_constraints.sql    Primary keys, foreign keys, and ANALYZE
-  pgbench_b_tx.sql             Standard transaction via CALL pgbench_b_transaction(...)
-  pgbench_b_simple_update.sql  Simple-Update transaction via CALL pgbench_b_simple_update(...)
-  pgbench_b_select_only.sql    Select-Only query against pgbench_accounts
+  pgbench_banking_constraints.sql    Primary keys, foreign keys, and ANALYZE
+  pgbench_banking_tx.sql             Standard transaction via CALL pgbench_banking_transaction(...)
+  pgbench_banking_simple_update.sql  Simple-Update transaction via CALL pgbench_banking_simple_update(...)
+  pgbench_banking_select_only.sql    Select-Only query against pgbench_accounts
 
 Initialize:
-  pgbench -n -f workloads/pgbench-b/pgbench_b_schema.sql
+  pgbench -n -f workloads/pgbench-banking/pgbench_banking_schema.sql
   pgbench -n -c 4 -j 4 -t 1 -D scale=10 -D num_workers=4 \
-          -f workloads/pgbench-b/pgbench_b_init.sql
-  pgbench -n -f workloads/pgbench-b/pgbench_b_constraints.sql
+          -f workloads/pgbench-banking/pgbench_banking_init.sql
+  pgbench -n -f workloads/pgbench-banking/pgbench_banking_constraints.sql
 
 Run standard transaction workload:
   pgbench -n -c 16 -j 4 -T 60 -D scale=10 \
-          -f workloads/pgbench-b/pgbench_b_tx.sql
+          -f workloads/pgbench-banking/pgbench_banking_tx.sql
 
 
-1. pgbench-c (workloads/pgbench-c/)
+1. pgbench-order (workloads/pgbench-order/)
 -----------------------------------
 
 Modeled after the TPC-C order-entry OLTP workload specification.
 
 Files:
-  pgbench_c_schema.sql        9 tables (warehouse, district, customer, history,
+  pgbench_order_schema.sql        9 tables (warehouse, district, customer, history,
                               new_order, orders, order_line, item, stock) and 5
-                              stored procedures (pgbench_c_new_order,
-                              pgbench_c_payment, pgbench_c_order_status,
-                              pgbench_c_delivery, pgbench_c_stock_level)
-  pgbench_c_init.sql          Parallel data generator (scale = warehouse count)
-  pgbench_c_constraints.sql   Secondary indexes, foreign keys, and ANALYZE
-  pgbench_c_new_order.sql     New-Order transaction (~45% mix, 1% simulated
+                              stored procedures (pgbench_order_new_order,
+                              pgbench_order_payment, pgbench_order_order_status,
+                              pgbench_order_delivery, pgbench_order_stock_level)
+  pgbench_order_init.sql          Parallel data generator (scale = warehouse count)
+  pgbench_order_constraints.sql   Secondary indexes, foreign keys, and ANALYZE
+  pgbench_order_new_order.sql     New-Order transaction (~45% mix, 1% simulated
                               invalid-item rollback caught via \try ... \catch,
                               with \keying_time and \think_time)
-  pgbench_c_payment.sql       Payment transaction (~43% mix, 60% by last name via
+  pgbench_order_payment.sql       Payment transaction (~43% mix, 60% by last name via
                               pgbench.c_last(pgbench.nurand(255, 0, 999)))
-  pgbench_c_order_status.sql  Order-Status read-only transaction (~4% mix)
-  pgbench_c_delivery.sql      Delivery batch transaction (~4% mix using \for)
-  pgbench_c_stock_level.sql   Stock-Level read-only scan (~4% mix)
+  pgbench_order_order_status.sql  Order-Status read-only transaction (~4% mix)
+  pgbench_order_delivery.sql      Delivery batch transaction (~4% mix using \for)
+  pgbench_order_stock_level.sql   Stock-Level read-only scan (~4% mix)
 
 Initialize (4 warehouses, 4 parallel loader threads):
-  pgbench -n -f workloads/pgbench-c/pgbench_c_schema.sql
+  pgbench -n -f workloads/pgbench-order/pgbench_order_schema.sql
   pgbench -n -c 4 -j 4 -t 1 -D scale=4 -D num_workers=4 \
-          -f workloads/pgbench-c/pgbench_c_init.sql
-  pgbench -n -f workloads/pgbench-c/pgbench_c_constraints.sql
+          -f workloads/pgbench-order/pgbench_order_init.sql
+  pgbench -n -f workloads/pgbench-order/pgbench_order_constraints.sql
 
 Run standard mix with SLA targets and JSON report:
   pgbench -n -c 16 -j 4 -T 60 -D scale=4 \
-          -f workloads/pgbench-c/pgbench_c_new_order.sql@45 \
-          -f workloads/pgbench-c/pgbench_c_payment.sql@43 \
-          -f workloads/pgbench-c/pgbench_c_order_status.sql@4 \
-          -f workloads/pgbench-c/pgbench_c_delivery.sql@4 \
-          -f workloads/pgbench-c/pgbench_c_stock_level.sql@4 \
+          -f workloads/pgbench-order/pgbench_order_new_order.sql@45 \
+          -f workloads/pgbench-order/pgbench_order_payment.sql@43 \
+          -f workloads/pgbench-order/pgbench_order_order_status.sql@4 \
+          -f workloads/pgbench-order/pgbench_order_delivery.sql@4 \
+          -f workloads/pgbench-order/pgbench_order_stock_level.sql@4 \
           --sla="total:p95<=5000ms" \
-          --json-report=pgbench_c_results.json
+          --json-report=pgbench_order_results.json
 
 
-2. pgbench-e (workloads/pgbench-e/)
+2. pgbench-brokerage (workloads/pgbench-brokerage/)
 -----------------------------------
 
 Modeled after the TPC-E financial brokerage OLTP benchmark specification.
 
 Files:
-  pgbench_e_schema.sql             16 brokerage tables and 10 stored procedures
-  pgbench_e_init.sql               Parallel brokerage data generator
-  pgbench_e_constraints.sql        Secondary indexes, foreign keys, and ANALYZE
-  pgbench_e_trade_order.sql        Trade-Order write transaction (with 1% rollback)
-  pgbench_e_trade_result.sql       Trade-Result write + Market-Feed update
-  pgbench_e_customer_position.sql  Customer-Position + Security-Detail read
-  pgbench_e_market_watch.sql       Market-Watch read
-  pgbench_e_broker_volume.sql      Broker-Volume aggregation read
-  pgbench_e_trade_status.sql       Trade-Status + Trade-Lookup read
+  pgbench_brokerage_schema.sql             16 brokerage tables and 10 stored procedures
+  pgbench_brokerage_init.sql               Parallel brokerage data generator
+  pgbench_brokerage_constraints.sql        Secondary indexes, foreign keys, and ANALYZE
+  pgbench_brokerage_trade_order.sql        Trade-Order write transaction (with 1% rollback)
+  pgbench_brokerage_trade_result.sql       Trade-Result write + Market-Feed update
+  pgbench_brokerage_customer_position.sql  Customer-Position + Security-Detail read
+  pgbench_brokerage_market_watch.sql       Market-Watch read
+  pgbench_brokerage_broker_volume.sql      Broker-Volume aggregation read
+  pgbench_brokerage_trade_status.sql       Trade-Status + Trade-Lookup read
 
 Initialize (scale 2, 2 parallel loader threads):
-  pgbench -n -f workloads/pgbench-e/pgbench_e_schema.sql
+  pgbench -n -f workloads/pgbench-brokerage/pgbench_brokerage_schema.sql
   pgbench -n -c 2 -j 2 -t 1 -D scale=2 -D num_workers=2 \
-          -f workloads/pgbench-e/pgbench_e_init.sql
-  pgbench -n -f workloads/pgbench-e/pgbench_e_constraints.sql
+          -f workloads/pgbench-brokerage/pgbench_brokerage_init.sql
+  pgbench -n -f workloads/pgbench-brokerage/pgbench_brokerage_constraints.sql
 
 Run brokerage mix:
   pgbench -n -c 8 -j 4 -T 60 -D scale=2 \
-          -f workloads/pgbench-e/pgbench_e_trade_order.sql@10 \
-          -f workloads/pgbench-e/pgbench_e_trade_result.sql@10 \
-          -f workloads/pgbench-e/pgbench_e_customer_position.sql@13 \
-          -f workloads/pgbench-e/pgbench_e_market_watch.sql@18 \
-          -f workloads/pgbench-e/pgbench_e_broker_volume.sql@5 \
-          -f workloads/pgbench-e/pgbench_e_trade_status.sql@44
+          -f workloads/pgbench-brokerage/pgbench_brokerage_trade_order.sql@10 \
+          -f workloads/pgbench-brokerage/pgbench_brokerage_trade_result.sql@10 \
+          -f workloads/pgbench-brokerage/pgbench_brokerage_customer_position.sql@13 \
+          -f workloads/pgbench-brokerage/pgbench_brokerage_market_watch.sql@18 \
+          -f workloads/pgbench-brokerage/pgbench_brokerage_broker_volume.sql@5 \
+          -f workloads/pgbench-brokerage/pgbench_brokerage_trade_status.sql@44
 
 
-3. pgbench-h (workloads/pgbench-h/)
+3. pgbench-analytics (workloads/pgbench-analytics/)
 -----------------------------------
 
 Modeled after the TPC-H decision support benchmark specification.
 
 Files:
-  pgbench_h_schema.sql       8 tables (region, nation, supplier, customer, part,
+  pgbench_analytics_schema.sql       8 tables (region, nation, supplier, customer, part,
                              partsupp, orders, lineitem)
-  pgbench_h_init.sql         Parallel decision support data generator
-  pgbench_h_constraints.sql  Secondary indexes, foreign keys, and ANALYZE
-  pgbench_h_q1.sql           Pricing Summary Report Query (Q1)
-  pgbench_h_q3.sql           Shipping Priority Query (Q3)
-  pgbench_h_q5.sql           Local Supplier Volume Query (Q5)
-  pgbench_h_q6.sql           Forecasting Revenue Change Query (Q6)
-  pgbench_h_q10.sql          Returned Item Reporting Query (Q10)
-  pgbench_h_q12.sql          Shipping Modes and Order Priority Query (Q12)
-  pgbench_h_q14.sql          Promotion Effect Query (Q14)
-  pgbench_h_q19.sql          Discounted Revenue Query (Q19)
-  pgbench_h_queries.sql      Combined multi-query stream (Q1..Q19)
-  pgbench_h_refresh.sql      RF1/RF2 refresh stream (INSERT + DELETE pair)
+  pgbench_analytics_init.sql         Parallel decision support data generator
+  pgbench_analytics_constraints.sql  Secondary indexes, foreign keys, and ANALYZE
+  pgbench_analytics_q1.sql           Pricing Summary Report Query (Q1)
+  pgbench_analytics_q3.sql           Shipping Priority Query (Q3)
+  pgbench_analytics_q5.sql           Local Supplier Volume Query (Q5)
+  pgbench_analytics_q6.sql           Forecasting Revenue Change Query (Q6)
+  pgbench_analytics_q10.sql          Returned Item Reporting Query (Q10)
+  pgbench_analytics_q12.sql          Shipping Modes and Order Priority Query (Q12)
+  pgbench_analytics_q14.sql          Promotion Effect Query (Q14)
+  pgbench_analytics_q19.sql          Discounted Revenue Query (Q19)
+  pgbench_analytics_queries.sql      Combined multi-query stream (Q1..Q19)
+  pgbench_analytics_refresh.sql      RF1/RF2 refresh stream (INSERT + DELETE pair)
 
 Initialize:
-  pgbench -n -f workloads/pgbench-h/pgbench_h_schema.sql
+  pgbench -n -f workloads/pgbench-analytics/pgbench_analytics_schema.sql
   pgbench -n -c 4 -j 4 -t 1 -D scale=1 -D num_workers=4 \
-          -f workloads/pgbench-h/pgbench_h_init.sql
-  pgbench -n -f workloads/pgbench-h/pgbench_h_constraints.sql
+          -f workloads/pgbench-analytics/pgbench_analytics_init.sql
+  pgbench -n -f workloads/pgbench-analytics/pgbench_analytics_constraints.sql
 
 Run concurrent query streams and refresh stream in separate client groups:
   pgbench -n -T 60 -D scale=1 \
-          --group="name=queries,clients=4,threads=4,sequential=true,file=workloads/pgbench-h/pgbench_h_queries.sql" \
-          --group="name=refresh,clients=1,threads=1,file=workloads/pgbench-h/pgbench_h_refresh.sql,rate=2"
+          --group="name=queries,clients=4,threads=4,sequential=true,file=workloads/pgbench-analytics/pgbench_analytics_queries.sql" \
+          --group="name=refresh,clients=1,threads=1,file=workloads/pgbench-analytics/pgbench_analytics_refresh.sql,rate=2"
 
 
-4. pgbench-ds (workloads/pgbench-ds/)
+4. pgbench-retail (workloads/pgbench-retail/)
 -------------------------------------
 
 Modeled after the TPC-DS multi-channel retail decision support benchmark specification.
 
 Files:
-  pgbench_ds_schema.sql          13 star-schema fact/dimension tables (date_dim,
+  pgbench_retail_schema.sql          13 star-schema fact/dimension tables (date_dim,
                                  item, customer_address, customer_demographics,
                                  customer, store, warehouse, promotion, store_sales,
                                  store_returns, catalog_sales, web_sales, inventory)
-  pgbench_ds_init.sql            Parallel star-schema data generator
-  pgbench_ds_constraints.sql     Secondary indexes, foreign keys, and ANALYZE
-  pgbench_ds_q_store_sales.sql   Store sales & returns rollup with CTE
-  pgbench_ds_q_cross_channel.sql Cross-channel (store/catalog/web) window ranking
-  pgbench_ds_q_inventory.sql     Warehouse inventory variation analysis
-  pgbench_ds_q_promotion.sql     Promotional sales ratio analysis
-  pgbench_ds_maintenance.sql     Fact table maintenance (insert/delete)
+  pgbench_retail_init.sql            Parallel star-schema data generator
+  pgbench_retail_constraints.sql     Secondary indexes, foreign keys, and ANALYZE
+  pgbench_retail_q_store_sales.sql   Store sales & returns rollup with CTE
+  pgbench_retail_q_cross_channel.sql Cross-channel (store/catalog/web) window ranking
+  pgbench_retail_q_inventory.sql     Warehouse inventory variation analysis
+  pgbench_retail_q_promotion.sql     Promotional sales ratio analysis
+  pgbench_retail_maintenance.sql     Fact table maintenance (insert/delete)
 
 Initialize:
-  pgbench -n -f workloads/pgbench-ds/pgbench_ds_schema.sql
+  pgbench -n -f workloads/pgbench-retail/pgbench_retail_schema.sql
   pgbench -n -c 4 -j 4 -t 1 -D scale=1 -D num_workers=4 \
-          -f workloads/pgbench-ds/pgbench_ds_init.sql
-  pgbench -n -f workloads/pgbench-ds/pgbench_ds_constraints.sql
+          -f workloads/pgbench-retail/pgbench_retail_init.sql
+  pgbench -n -f workloads/pgbench-retail/pgbench_retail_constraints.sql
 
 Run reporting queries alongside maintenance:
   pgbench -n -T 60 -D scale=1 \
-          --group="name=reporting,clients=4,threads=4,file=workloads/pgbench-ds/pgbench_ds_q_store_sales.sql@25,file=workloads/pgbench-ds/pgbench_ds_q_cross_channel.sql@25,file=workloads/pgbench-ds/pgbench_ds_q_inventory.sql@25,file=workloads/pgbench-ds/pgbench_ds_q_promotion.sql@25" \
-          --group="name=maint,clients=1,threads=1,file=workloads/pgbench-ds/pgbench_ds_maintenance.sql,rate=2"
+          --group="name=reporting,clients=4,threads=4,file=workloads/pgbench-retail/pgbench_retail_q_store_sales.sql@25,file=workloads/pgbench-retail/pgbench_retail_q_cross_channel.sql@25,file=workloads/pgbench-retail/pgbench_retail_q_inventory.sql@25,file=workloads/pgbench-retail/pgbench_retail_q_promotion.sql@25" \
+          --group="name=maint,clients=1,threads=1,file=workloads/pgbench-retail/pgbench_retail_maintenance.sql,rate=2"
 
 
 5. pgbench-htap (workloads/pgbench-htap/)
 -----------------------------------------
 
 Modeled after the CH-benCHmark hybrid transactional / analytical processing
-(HTAP) benchmark specification, combining the operational schema of pgbench-c
+(HTAP) benchmark specification, combining the operational schema of pgbench-order
 with analytical dimensions and complex multi-table analytical queries.
 
 Files:
-  pgbench_htap_schema.sql       pgbench-c operational tables/procedures + HTAP analytical
+  pgbench_htap_schema.sql       pgbench-order operational tables/procedures + HTAP analytical
                                 dimension tables (htap_region, htap_nation, htap_supplier)
   pgbench_htap_init.sql         Parallel loader for combined operational + analytical
                                 schema
   pgbench_htap_constraints.sql  Secondary indexes, foreign keys, and ANALYZE
-  pgbench_htap_oltp.sql         Weighted pgbench-c OLTP stream (New-Order, Payment,
+  pgbench_htap_oltp.sql         Weighted pgbench-order OLTP stream (New-Order, Payment,
                                 Order-Status, Delivery, Stock-Level)
   pgbench_htap_olap_q1.sql      HTAP Q1 (order_line pricing summary)
   pgbench_htap_olap_q3.sql      HTAP Q3 (unshipped order revenue priority)
@@ -407,20 +408,20 @@ workload families:
 Files:
   pgbench_graph_schema.sql         Unified LDBC SNB (10 tables) + FinBench (5 tables)
                                    schema + pgbench_graph_add_edge procedure
-  pgbench_graph_init.sql           Parallel graph generator using pgbench.ldbc_correlated_edge
-                                   and pgbench.ldbc_flashmob_ts
+  pgbench_graph_init.sql           Parallel graph generator using pgbench.community_correlated_edge
+                                   and pgbench.burst_timestamp
   pgbench_graph_constraints.sql    Primary keys, bidirectional adjacency & temporal indexes
   pgbench_graph_1hop.sql           1-hop neighborhood + recent posts traversal
   pgbench_graph_2hop.sql           2-hop friend-of-friend scoring query
   pgbench_graph_add_edge.sql       Transactional edge/post insert + reservoir push
-  pgbench_ldbc_lsqb.sql            LSQB Q1-Q9 cyclic, acyclic, and anti-join patterns
-  pgbench_ldbc_snb_is.sql          LDBC SNB Interactive Short Reads (IS1-IS7)
-  pgbench_ldbc_snb_ic.sql          LDBC SNB Interactive Complex Reads (IC + \call IS)
-  pgbench_ldbc_snb_iu.sql          LDBC SNB Interactive Inserts (IU1-IU8 + min-watermark)
-  pgbench_ldbc_snb_id.sql          LDBC SNB Interactive v2 Cascading Deletes (ID1-ID8)
-  pgbench_ldbc_snb_bi.sql          LDBC SNB BI phased run synchronized via \phase_barrier
-  pgbench_ldbc_finbench.sql        LDBC FinBench TSR/TCR/TW + TRW conditional ROLLBACK
-  pgbench_ldbc_graphalytics.sql    LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC)
+  pgbench_graph_subgraph.sql            LSQB Q1-Q9 cyclic, acyclic, and anti-join patterns
+  pgbench_graph_social_short.sql          LDBC SNB Interactive Short Reads (IS1-IS7)
+  pgbench_graph_social_complex.sql          LDBC SNB Interactive Complex Reads (IC + \call IS)
+  pgbench_graph_social_insert.sql          LDBC SNB Interactive Inserts (IU1-IU8 + min-watermark)
+  pgbench_graph_social_delete.sql          LDBC SNB Interactive v2 Cascading Deletes (ID1-ID8)
+  pgbench_graph_social_bi.sql          LDBC SNB BI phased run synchronized via \phase_barrier
+  pgbench_graph_financial.sql        LDBC FinBench TSR/TCR/TW + TRW conditional ROLLBACK
+  pgbench_graph_algorithms.sql    LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC)
 
 Initialize:
   pgbench -n -f workloads/pgbench-graph/pgbench_graph_schema.sql
@@ -431,25 +432,25 @@ Initialize:
 Run LSQB (Q1-Q9) with result validation:
   pgbench -n -c 4 -j 4 -t 5 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph/pgbench_ldbc_lsqb.sql
+          -f workloads/pgbench-graph/pgbench_graph_subgraph.sql
 
 Run LDBC SNB Interactive v1/v2 (multi-group readers + writers with reservoirs):
   pgbench -n -T 60 -s 1 --tcr=0.1 \
           --reservoir=persons:4096 --reservoir=messages:8192 \
-          --group="name=snb_readers,clients=4,threads=2,file=workloads/pgbench-graph/pgbench_ldbc_snb_ic.sql@30,file=workloads/pgbench-graph/pgbench_ldbc_snb_is.sql@70" \
-          --group="name=snb_writers,clients=2,threads=2,file=workloads/pgbench-graph/pgbench_ldbc_snb_iu.sql@75,file=workloads/pgbench-graph/pgbench_ldbc_snb_id.sql@25"
+          --group="name=snb_readers,clients=4,threads=2,file=workloads/pgbench-graph/pgbench_graph_social_complex.sql@30,file=workloads/pgbench-graph/pgbench_graph_social_short.sql@70" \
+          --group="name=snb_writers,clients=2,threads=2,file=workloads/pgbench-graph/pgbench_graph_social_insert.sql@75,file=workloads/pgbench-graph/pgbench_graph_social_delete.sql@25"
 
 Run LDBC SNB BI (Power -> Micro-Batch -> Throughput synchronized via \phase_barrier):
   pgbench -n -c 4 -j 4 -t 1 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph/pgbench_ldbc_snb_bi.sql
+          -f workloads/pgbench-graph/pgbench_graph_social_bi.sql
 
 Run LDBC FinBench & LDBC Graphalytics:
   pgbench -n -c 4 -j 2 -t 10 -s 1 \
-          -f workloads/pgbench-graph/pgbench_ldbc_finbench.sql
+          -f workloads/pgbench-graph/pgbench_graph_financial.sql
   pgbench -n -c 2 -j 2 -t 1 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph/pgbench_ldbc_graphalytics.sql
+          -f workloads/pgbench-graph/pgbench_graph_algorithms.sql
 
 
 8. pgbench-graph-pgq (workloads/pgbench-graph-pgq/)
@@ -458,27 +459,27 @@ Run LDBC FinBench & LDBC Graphalytics:
 ISO SQL/PGQ (GRAPH_TABLE / CREATE PROPERTY GRAPH) counterpart to
 pgbench-graph. Implements the exact same 14 LDBC-inspired social network and
 financial graph benchmark scripts using declarative property graph DDL
-(CREATE PROPERTY GRAPH snb_graph and finbench_graph with NODE TABLES and EDGE
+(CREATE PROPERTY GRAPH social_graph and financial_graph with NODE TABLES and EDGE
 TABLES) and GRAPH_TABLE (... MATCH ... COLUMNS (...)) pattern matching.
 
 Files:
   pgbench_graph_pgq_schema.sql       Unified LDBC SNB + FinBench relational tables,
                                      pgbench_graph_add_edge procedure, and SQL/PGQ
-                                     CREATE PROPERTY GRAPH snb_graph & finbench_graph
-  pgbench_graph_pgq_init.sql         Parallel graph generator using pgbench.ldbc_correlated_edge
-                                     and pgbench.ldbc_flashmob_ts
+                                     CREATE PROPERTY GRAPH social_graph & financial_graph
+  pgbench_graph_pgq_init.sql         Parallel graph generator using pgbench.community_correlated_edge
+                                     and pgbench.burst_timestamp
   pgbench_graph_pgq_constraints.sql  Primary keys, bidirectional adjacency & temporal indexes
   pgbench_graph_pgq_1hop.sql         1-hop neighborhood + recent posts via GRAPH_TABLE
   pgbench_graph_pgq_2hop.sql         2-hop friend-of-friend scoring via GRAPH_TABLE
   pgbench_graph_pgq_add_edge.sql     Transactional edge/post insert + reservoir push
-  pgbench_ldbc_pgq_lsqb.sql          LSQB Q1-Q9 cyclic, acyclic, and anti-join GRAPH_TABLE patterns
-  pgbench_ldbc_pgq_snb_is.sql        LDBC SNB Interactive Short Reads (IS1-IS7) via GRAPH_TABLE
-  pgbench_ldbc_pgq_snb_ic.sql        LDBC SNB Interactive Complex Reads (IC + \call IS) via GRAPH_TABLE
-  pgbench_ldbc_pgq_snb_iu.sql        LDBC SNB Interactive Inserts (IU1-IU8 + min-watermark)
-  pgbench_ldbc_pgq_snb_id.sql        LDBC SNB Interactive v2 Cascading Deletes (ID1-ID8) via GRAPH_TABLE
-  pgbench_ldbc_pgq_snb_bi.sql        LDBC SNB BI phased run via GRAPH_TABLE + \phase_barrier
-  pgbench_ldbc_pgq_finbench.sql      LDBC FinBench TSR/TCR/TW + TRW conditional ROLLBACK via GRAPH_TABLE
-  pgbench_ldbc_pgq_graphalytics.sql  LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC) via GRAPH_TABLE
+  pgbench_graph_pgq_subgraph.sql          LSQB Q1-Q9 cyclic, acyclic, and anti-join GRAPH_TABLE patterns
+  pgbench_graph_pgq_social_short.sql        LDBC SNB Interactive Short Reads (IS1-IS7) via GRAPH_TABLE
+  pgbench_graph_pgq_social_complex.sql        LDBC SNB Interactive Complex Reads (IC + \call IS) via GRAPH_TABLE
+  pgbench_graph_pgq_social_insert.sql        LDBC SNB Interactive Inserts (IU1-IU8 + min-watermark)
+  pgbench_graph_pgq_social_delete.sql        LDBC SNB Interactive v2 Cascading Deletes (ID1-ID8) via GRAPH_TABLE
+  pgbench_graph_pgq_social_bi.sql        LDBC SNB BI phased run via GRAPH_TABLE + \phase_barrier
+  pgbench_graph_pgq_financial.sql      LDBC FinBench TSR/TCR/TW + TRW conditional ROLLBACK via GRAPH_TABLE
+  pgbench_graph_pgq_algorithms.sql  LDBC Graphalytics (BFS, WCC, SSSP, PageRank, LCC) via GRAPH_TABLE
 
 Initialize:
   pgbench -n -f workloads/pgbench-graph-pgq/pgbench_graph_pgq_schema.sql
@@ -489,23 +490,23 @@ Initialize:
 Run LSQB (Q1-Q9) with GRAPH_TABLE and result validation:
   pgbench -n -c 4 -j 4 -t 5 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_lsqb.sql
+          -f workloads/pgbench-graph-pgq/pgbench_graph_pgq_subgraph.sql
 
 Run LDBC SNB Interactive v1/v2 (multi-group GRAPH_TABLE readers + writers with reservoirs):
   pgbench -n -T 60 -s 1 --tcr=0.1 \
           --reservoir=persons:4096 --reservoir=messages:8192 \
-          --group="name=snb_readers,clients=4,threads=2,file=workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_snb_ic.sql@30,file=workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_snb_is.sql@70" \
-          --group="name=snb_writers,clients=2,threads=2,file=workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_snb_iu.sql@75,file=workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_snb_id.sql@25"
+          --group="name=snb_readers,clients=4,threads=2,file=workloads/pgbench-graph-pgq/pgbench_graph_pgq_social_complex.sql@30,file=workloads/pgbench-graph-pgq/pgbench_graph_pgq_social_short.sql@70" \
+          --group="name=snb_writers,clients=2,threads=2,file=workloads/pgbench-graph-pgq/pgbench_graph_pgq_social_insert.sql@75,file=workloads/pgbench-graph-pgq/pgbench_graph_pgq_social_delete.sql@25"
 
 Run LDBC SNB BI (Power -> Micro-Batch -> Throughput via GRAPH_TABLE + \phase_barrier):
   pgbench -n -c 4 -j 4 -t 1 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_snb_bi.sql
+          -f workloads/pgbench-graph-pgq/pgbench_graph_pgq_social_bi.sql
 
 Run LDBC FinBench & LDBC Graphalytics via GRAPH_TABLE:
   pgbench -n -c 4 -j 2 -t 10 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_finbench.sql
+          -f workloads/pgbench-graph-pgq/pgbench_graph_pgq_financial.sql
   pgbench -n -c 2 -j 2 -t 1 -s 1 \
           --sla="validation_failures<=0" \
-          -f workloads/pgbench-graph-pgq/pgbench_ldbc_pgq_graphalytics.sql
+          -f workloads/pgbench-graph-pgq/pgbench_graph_pgq_algorithms.sql

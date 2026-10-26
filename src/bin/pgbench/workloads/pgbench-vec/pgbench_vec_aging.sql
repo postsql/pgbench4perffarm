@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark inspired
+ * by the filtered vector search methodologies described in "VecBench: A
+ * Controllable Benchmark for Filtered Vector Search" (Zhang et al., ACM SIGMOD).
+ * It is not the official VecBench software suite and does not publish official
+ * VecBench leaderboard ratings.
+ */
+
 --
 -- pgbench-vec: Mode 6 Continuous Ingestion, Aging, and Index Degradation
 --
@@ -17,13 +27,11 @@
 
 \if :op_roll <= 50
     -- Streaming Vector Ingestion & Causal Watermark Advancement
-    -- Bound the unindexed delta buffer to 7.5% of the base catalog (200*:scale + 1 .. 215*:scale)
-    -- with matching cluster dispersion (0.25) so steady-state recall stabilizes around ~0.88-0.92.
-    \set new_id random(200 * :scale + 1, 215 * :scale)
+    \set new_id random(2000000, 9999999)
     \set cat random(0, 9)
     \set tag1 random(0, 4)
     \set tag2 random(0, 4)
-    \set v clustered_vector(:dim, 10, 0.25, 42, :cat)
+    \set v random_unit_vector(:dim)
 
     INSERT INTO pgbench_vec_items (id, category, price, is_active, tags, payload, metadata, embedding, image_embedding)
     VALUES (:new_id, :cat, 49.99, true, ARRAY[:tag1, :tag2], 'streaming-aging-item',
@@ -50,13 +58,12 @@
      WHERE id = :drift_id;
 
 \else
-    -- Catalog Churn & Soft Deletion (with steady-state reactivation)
+    -- Catalog Churn & Soft Deletion
     \set churn_id random(1, 200 * :scale)
-    \set revive_id random(1, 200 * :scale)
 
     UPDATE pgbench_vec_items
-       SET is_active = CASE WHEN id = :churn_id THEN false ELSE true END
-     WHERE id IN (:churn_id, :revive_id);
+       SET is_active = false
+     WHERE id = :churn_id;
 
 \endif
 

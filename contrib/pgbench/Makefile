@@ -18,7 +18,9 @@ endif
 
 ifdef USE_PGXS
 PG_CONFIG ?= pg_config
-PG_CPPFLAGS = -I$(srcdir)/../../src/include
+HAS_PRNG_NORMAL := $(shell grep -q pg_prng_double_normal "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/common/pg_prng.h" 2>/dev/null && echo 1 || echo 0)
+HAS_CONSTRUCT_ARRAY_BUILTIN := $(shell grep -q construct_array_builtin "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/utils/array.h" 2>/dev/null && echo 1 || echo 0)
+PG_CPPFLAGS = -I$(srcdir)/../../src/include -DHAVE_PRNG_NORMAL=$(HAS_PRNG_NORMAL) -DHAVE_CONSTRUCT_ARRAY_BUILTIN=$(HAS_CONSTRUCT_ARRAY_BUILTIN)
 EXTRA_CLEAN = pgbench_funcs.c
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 PG_CLANG := $(shell awk -F'= *' '/^CLANG *=/{print $$2}' "$(dir $(PGXS))../../src/Makefile.global" 2>/dev/null)

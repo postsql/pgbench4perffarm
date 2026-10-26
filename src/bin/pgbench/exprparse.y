@@ -518,10 +518,10 @@ static const struct
 		"ndcg_at_k", PGBENCH_NARGS_2_TO_3, PGBENCH_NDCG_AT_K
 	},
 	{
-		"ldbc_correlated_edge", PGBENCH_NARGS_4_TO_5, PGBENCH_LDBC_CORRELATED_EDGE
+		"community_correlated_edge", PGBENCH_NARGS_4_TO_5, PGBENCH_COMMUNITY_CORRELATED_EDGE
 	},
 	{
-		"ldbc_flashmob_ts", PGBENCH_NARGS_4_TO_5, PGBENCH_LDBC_FLASHMOB_TS
+		"burst_timestamp", PGBENCH_NARGS_4_TO_5, PGBENCH_BURST_TIMESTAMP
 	},
 	{
 		"begin_dependent_write", PGBENCH_NARGS_1_TO_2, PGBENCH_BEGIN_DEPENDENT_WRITE

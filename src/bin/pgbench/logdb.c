@@ -312,7 +312,7 @@ serializeConfigJsonToString(void)
  */
 static char *
 serializeReportJsonToString(StatsData *total, double bench_duration,
-							double tpmc, double qphh)
+							double nopm, double qph)
 {
 #ifdef WIN32
 	char		tmppath[MAXPGPATH];
@@ -320,7 +320,7 @@ serializeReportJsonToString(StatsData *total, double bench_duration,
 
 	if (fp == NULL)
 		pg_fatal("could not open temporary file \"%s\": %m", tmppath);
-	writeReportJsonObject(fp, total, bench_duration, tpmc, qphh);
+	writeReportJsonObject(fp, total, bench_duration, nopm, qph);
 	return finish_temp_json_stream(fp, tmppath);
 #else
 	char	   *buf = NULL;
@@ -329,7 +329,7 @@ serializeReportJsonToString(StatsData *total, double bench_duration,
 
 	if (fp == NULL)
 		pg_fatal("open_memstream failed: %m");
-	writeReportJsonObject(fp, total, bench_duration, tpmc, qphh);
+	writeReportJsonObject(fp, total, bench_duration, nopm, qph);
 	fclose(fp);
 	return buf ? buf : pg_strdup("{}");
 #endif
@@ -2011,8 +2011,8 @@ logDbFinalizeRun(StatsData *total, pg_time_usec_t total_duration,
 	int64		total_cnt = total->cnt + total->cnt_skipped + failures;
 	double		bench_duration = PG_TIME_GET_DOUBLE(total_duration);
 	double		tps = (bench_duration > 0.0) ? (total->cnt / bench_duration) : 0.0;
-	double		tpmc = 0.0;
-	double		qphh = 0.0;
+	double		nopm = 0.0;
+	double		qph = 0.0;
 	int64		total_dropped = progress_dropped_rows;
 	char	   *report_json;
 	const char *status_str;
@@ -2023,9 +2023,9 @@ logDbFinalizeRun(StatsData *total, pg_time_usec_t total_duration,
 	/* Compute composite metrics if applicable and ensure SLAs are evaluated */
 	{
 		int64		new_order_cnt = 0;
-		bool		has_tpmc = false;
+		bool		has_nopm = false;
 		int64		tpch_query_cnt = 0;
-		bool		has_qphh = false;
+		bool		has_qph = false;
 
 		for (int i = 0; i < num_scripts; i++)
 		{
@@ -2035,7 +2035,7 @@ logDbFinalizeRun(StatsData *total, pg_time_usec_t total_duration,
 				strstr(desc, "new-order") != NULL ||
 				strstr(desc, "NewOrder") != NULL)
 			{
-				has_tpmc = true;
+				has_nopm = true;
 				new_order_cnt += (per_script_stats ? sql_script[i].stats.cnt : total->cnt);
 			}
 		}
@@ -2043,28 +2043,28 @@ logDbFinalizeRun(StatsData *total, pg_time_usec_t total_duration,
 		{
 			if (client_groups[g].sequential)
 			{
-				has_qphh = true;
+				has_qph = true;
 				tpch_query_cnt += client_groups[g].stats.cnt;
 			}
 		}
-		if (!has_qphh)
+		if (!has_qph)
 		{
 			for (int i = 0; i < num_scripts; i++)
 			{
 				const char *desc = sql_script[i].desc;
 
-				if (strstr(desc, "tpch") != NULL || strstr(desc, "qphh") != NULL ||
+				if (strstr(desc, "tpch") != NULL || strstr(desc, "qph") != NULL ||
 					strstr(desc, "pgbench-h") != NULL || strstr(desc, "pgbench_h") != NULL)
 				{
-					has_qphh = true;
+					has_qph = true;
 					tpch_query_cnt += (per_script_stats ? sql_script[i].stats.cnt : total->cnt);
 				}
 			}
 		}
-		if (has_tpmc && bench_duration > 0.0)
-			tpmc = (new_order_cnt * 60.0) / bench_duration;
-		if (has_qphh && bench_duration > 0.0)
-			qphh = (tpch_query_cnt * 3600.0) / bench_duration;
+		if (has_nopm && bench_duration > 0.0)
+			nopm = (new_order_cnt * 60.0) / bench_duration;
+		if (has_qph && bench_duration > 0.0)
+			qph = (tpch_query_cnt * 3600.0) / bench_duration;
 
 		if (total_cnt <= 0 && num_slas > 0)
 			evaluateSlaRules(total, bench_duration, false);
@@ -2073,7 +2073,7 @@ logDbFinalizeRun(StatsData *total, pg_time_usec_t total_duration,
 	for (int i = 0; i < nthreads; i++)
 		total_dropped += threads[i].log_db_dropped_rows;
 
-	report_json = serializeReportJsonToString(total, bench_duration, tpmc, qphh);
+	report_json = serializeReportJsonToString(total, bench_duration, nopm, qph);
 
 	/* Ensure log_main_conn is alive; reconnect if needed */
 	if (log_main_conn == NULL || PQstatus(log_main_conn) != CONNECTION_OK)

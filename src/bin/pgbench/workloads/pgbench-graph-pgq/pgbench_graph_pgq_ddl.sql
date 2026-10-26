@@ -1,14 +1,26 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark designed
+ * for database performance research and regression testing. While modeled
+ * after graph traversal patterns published by the Graph Data Council (LDBC),
+ * this is NOT an LDBC Benchmark, is NOT an implementation of an LDBC Benchmark,
+ * and these results are NOT LDBC Benchmark Results.
+ * LDBC, LDBC Benchmark, and LDBC Benchmark Results are registered trademarks
+ * of the Graph Data Council. Distributed under CC-BY 4.0 attribution terms.
+ */
+
 --
 -- pgbench-graph-pgq: Property Graph Definitions for Native ISO SQL/PGQ (GRAPH_TABLE)
--- Defines snb_graph and finbench_graph using CREATE PROPERTY GRAPH.
+-- Defines social_graph and financial_graph using CREATE PROPERTY GRAPH.
 --
 
 SET client_min_messages = warning;
 
-DROP PROPERTY GRAPH IF EXISTS finbench_graph CASCADE;
-DROP PROPERTY GRAPH IF EXISTS snb_graph CASCADE;
+DROP PROPERTY GRAPH IF EXISTS financial_graph CASCADE;
+DROP PROPERTY GRAPH IF EXISTS social_graph CASCADE;
 
-CREATE PROPERTY GRAPH snb_graph
+CREATE PROPERTY GRAPH social_graph
     NODE TABLES (
         pgbench_graph_places KEY (id)
             LABEL Place PROPERTIES ALL COLUMNS,
@@ -68,7 +80,7 @@ CREATE PROPERTY GRAPH snb_graph
             LABEL isPartOf PROPERTIES (id, part_of_id)
     );
 
-CREATE PROPERTY GRAPH finbench_graph
+CREATE PROPERTY GRAPH financial_graph
     NODE TABLES (
         pgbench_fin_accounts KEY (id)
             LABEL Account PROPERTIES ALL COLUMNS,

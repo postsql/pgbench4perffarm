@@ -243,7 +243,7 @@ extern void disconnect_all(CState *state, int length);
 extern void printVersion(PgBenchConn *con);
 extern void evaluateSlaRules(StatsData *total, double bench_duration, bool print_stdout);
 extern void writeReportJsonObject(FILE *jfp, StatsData *total, double bench_duration,
-								  double tpmc, double qphh);
+								  double nopm, double qph);
 extern void printResults(StatsData *total, pg_time_usec_t total_time,
 						 pg_time_usec_t conn_total_time,
 						 pg_time_usec_t bench_total_time,

@@ -40,6 +40,6 @@
   ],
   "sla": [
     "total:r_aging:recall>=0.80",
-    "total:p95<=5000ms"
+    "total:p95<=150ms"
   ]
 }

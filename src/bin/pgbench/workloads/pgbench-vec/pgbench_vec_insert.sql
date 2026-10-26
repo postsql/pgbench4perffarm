@@ -1,20 +1,28 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark inspired
+ * by the filtered vector search methodologies described in "VecBench: A
+ * Controllable Benchmark for Filtered Vector Search" (Zhang et al., ACM SIGMOD).
+ * It is not the official VecBench software suite and does not publish official
+ * VecBench leaderboard ratings.
+ */
+
 --
 -- pgbench-vec: Streaming Vector Upsert & Causal Watermark Advancement
 --
 
 \set dim 8
-\set new_id random(1, 200 * :scale)
+\set new_id random(1000000, 9999999)
 \set cat random(0, 9)
 \set tag1 random(0, 4)
 \set tag2 random(0, 4)
-\set v clustered_vector(:dim, 10, 0.15, 42, :cat)
-\set iv random_unit_vector(:dim)
+\set v random_vector(:dim)
 
-INSERT INTO pgbench_vec_items (id, category, tags, payload, embedding, image_embedding)
-VALUES (:new_id, :cat, ARRAY[:tag1, :tag2], 'streamed-item', pgbench_vec_parse(:v), pgbench_vec_parse(:iv))
+INSERT INTO pgbench_vec_items (id, category, tags, payload, embedding)
+VALUES (:new_id, :cat, ARRAY[:tag1, :tag2], 'streamed-item', pgbench_vec_parse(:v))
 ON CONFLICT (id) DO UPDATE
    SET embedding = EXCLUDED.embedding,
-       image_embedding = EXCLUDED.image_embedding,
        category = EXCLUDED.category
 RETURNING id \gset ins_
 

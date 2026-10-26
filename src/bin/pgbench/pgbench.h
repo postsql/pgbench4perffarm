@@ -33,7 +33,17 @@
 #define pg_fallthrough __attribute__((fallthrough))
 #endif
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 180000
+#ifndef pg_malloc_array
+#define pg_malloc_array(type, count) ((type *) pg_malloc(sizeof(type) * (count)))
+#endif
+#ifndef pg_malloc0_array
+#define pg_malloc0_array(type, count) ((type *) pg_malloc0(sizeof(type) * (count)))
+#endif
+#ifndef pg_realloc_array
+#define pg_realloc_array(pointer, type, count) ((type *) pg_realloc((pointer), sizeof(type) * (count)))
+#endif
+
+#if !(defined(HAVE_PSQL_SCAN_LOC) ? HAVE_PSQL_SCAN_LOC : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 180000))
 extern void psql_scan_get_location(PsqlScanState state, int *lineno, int *offset);
 #endif
 
@@ -43,7 +53,7 @@ extern void psql_scan_get_location(PsqlScanState state, int *lineno, int *offset
 #define PQsendPipelineSync(conn) PQpipelineSync(conn)
 #endif
 
-#if defined(PG_VERSION_NUM) && PG_VERSION_NUM < 190000
+#if !(defined(HAVE_PG_INIT_TIMING) ? HAVE_PG_INIT_TIMING : (!defined(PG_VERSION_NUM) || PG_VERSION_NUM >= 190000))
 #define pg_initialize_timing() ((void) 0)
 #endif
 
@@ -191,8 +201,8 @@ typedef enum PgBenchFunction
 	PGBENCH_RESERVOIR_COUNT,
 	PGBENCH_RECALL_AT_K,
 	PGBENCH_NDCG_AT_K,
-	PGBENCH_LDBC_CORRELATED_EDGE,
-	PGBENCH_LDBC_FLASHMOB_TS,
+	PGBENCH_COMMUNITY_CORRELATED_EDGE,
+	PGBENCH_BURST_TIMESTAMP,
 	PGBENCH_BEGIN_DEPENDENT_WRITE,
 	PGBENCH_END_DEPENDENT_WRITE,
 } PgBenchFunction;

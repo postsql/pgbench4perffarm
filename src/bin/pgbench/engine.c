@@ -575,6 +575,48 @@ checkCaughtError(CState *st, const char *sqlstate)
 }
 
 /*
+ * Check if an SQL command string is a standalone ROLLBACK statement.
+ */
+static bool
+isStandaloneRollback(const char *sql)
+{
+	const char *p = sql;
+
+	if (p == NULL)
+		return false;
+
+	while (*p != '\0')
+	{
+		while (*p != '\0' && isspace((unsigned char) *p))
+			p++;
+		if (p[0] == '-' && p[1] == '-')
+		{
+			p += 2;
+			while (*p != '\0' && *p != '\n')
+				p++;
+			continue;
+		}
+		if (p[0] == '/' && p[1] == '*')
+		{
+			p += 2;
+			while (*p != '\0' && !(p[0] == '*' && p[1] == '/'))
+				p++;
+			if (*p != '\0')
+				p += 2;
+			continue;
+		}
+		break;
+	}
+
+	if (pg_strncasecmp(p, "rollback", 8) != 0)
+		return false;
+	p += 8;
+	while (isspace((unsigned char) *p) || *p == ';')
+		p++;
+	return (*p == '\0');
+}
+
+/*
  * Process query response from the backend.
  *
  * If varprefix is not NULL, it's the variable name prefix where to store
@@ -630,8 +672,15 @@ readCommandResponse(CState *st, MetaCommand meta, char *varprefix)
 				}
 				else
 				{
+					Command    *cur_cmd = sql_script[st->use_file].commands[st->command];
+
 					st->last_nrows = active_driver->ntuples(res);
-					st->last_status = "OK";
+					if (cur_cmd != NULL && cur_cmd->type == SQL_COMMAND &&
+						cur_cmd->argv[0] != NULL &&
+						isStandaloneRollback(cur_cmd->argv[0]))
+						st->last_status = "ROLLBACK";
+					else
+						st->last_status = "OK";
 				}
 				strlcpy(st->last_sqlstate, "00000", sizeof(st->last_sqlstate));
 
@@ -945,24 +994,6 @@ printVerboseErrorMessages(CState *st, pg_time_usec_t *now, bool is_retry)
 	pg_log_info("%s", buf.data);
 
 	termPQExpBuffer(&buf);
-}
-
-/*
- * Check if an SQL command string is a standalone ROLLBACK statement.
- */
-static bool
-isStandaloneRollback(const char *sql)
-{
-	const char *p = sql;
-
-	while (isspace((unsigned char) *p))
-		p++;
-	if (pg_strncasecmp(p, "rollback", 8) != 0)
-		return false;
-	p += 8;
-	while (isspace((unsigned char) *p) || *p == ';')
-		p++;
-	return (*p == '\0');
 }
 
 /*
@@ -1717,6 +1748,20 @@ session_slot_acquired:
 			case CSTATE_END_COMMAND:
 
 				command = sql_script[st->use_file].commands[st->command];
+
+				if (command->type == SQL_COMMAND &&
+					command->argv[0] != NULL &&
+					isStandaloneRollback(command->argv[0]) &&
+					!(st->try_depth > 0 && st->try_stack[st->try_depth - 1].in_catch))
+				{
+					thread->stats.expected_rollbacks++;
+					if (per_script_stats)
+					{
+						lockScriptStats();
+						sql_script[st->use_file].stats.expected_rollbacks++;
+						unlockScriptStats();
+					}
+				}
 
 				/*
 				 * If a SQL command (or pipeline) succeeded, clear any one-shot
@@ -2857,7 +2902,7 @@ evaluateSlaRules(StatsData *total, double bench_duration, bool print_stdout)
  */
 void
 writeReportJsonObject(FILE *jfp, StatsData *total, double bench_duration,
-					  double tpmc, double qphh)
+					  double nopm, double qph)
 {
 	int64		failures = getFailures(total);
 	double		tps = (bench_duration > 0.0) ? (total->cnt / bench_duration) : 0.0;
@@ -3009,8 +3054,8 @@ writeReportJsonObject(FILE *jfp, StatsData *total, double bench_duration,
 	fprintf(jfp, "  },\n");
 
 	fprintf(jfp, "  \"composite_metrics\": {\n");
-	fprintf(jfp, "    \"tpmC\": %.2f,\n", tpmc);
-	fprintf(jfp, "    \"QphH\": %.2f\n", qphh);
+	fprintf(jfp, "    \"nopm\": %.2f,\n", nopm);
+	fprintf(jfp, "    \"qph\": %.2f\n", qph);
 	fprintf(jfp, "  },\n");
 
 	fprintf(jfp, "  \"groups\": [\n");
@@ -3475,16 +3520,16 @@ printResults(StatsData *total,
 	}
 
 	/*
-	 * Compute and report standard composite metrics (tpmC and QphH@SF) when
+	 * Compute and report standard composite metrics (nopm and qph@SF) when
 	 * matching scripts or sequential OLAP streams are present.
 	 */
 	{
 		int64		new_order_cnt = 0;
-		bool		has_tpmc = false;
-		double		tpmc = 0.0;
+		bool		has_nopm = false;
+		double		nopm = 0.0;
 		int64		tpch_query_cnt = 0;
-		bool		has_qphh = false;
-		double		qphh = 0.0;
+		bool		has_qph = false;
+		double		qph = 0.0;
 
 		for (int i = 0; i < num_scripts; i++)
 		{
@@ -3494,7 +3539,7 @@ printResults(StatsData *total,
 				strstr(desc, "new-order") != NULL ||
 				strstr(desc, "NewOrder") != NULL)
 			{
-				has_tpmc = true;
+				has_nopm = true;
 				new_order_cnt += (per_script_stats ? sql_script[i].stats.cnt : total->cnt);
 			}
 		}
@@ -3503,36 +3548,36 @@ printResults(StatsData *total,
 		{
 			if (client_groups[g].sequential)
 			{
-				has_qphh = true;
+				has_qph = true;
 				tpch_query_cnt += client_groups[g].stats.cnt;
 			}
 		}
-		if (!has_qphh)
+		if (!has_qph)
 		{
 			for (int i = 0; i < num_scripts; i++)
 			{
 				const char *desc = sql_script[i].desc;
 
-				if (strstr(desc, "tpch") != NULL || strstr(desc, "qphh") != NULL ||
+				if (strstr(desc, "tpch") != NULL || strstr(desc, "qph") != NULL ||
 					strstr(desc, "pgbench-h") != NULL || strstr(desc, "pgbench_h") != NULL)
 				{
-					has_qphh = true;
+					has_qph = true;
 					tpch_query_cnt += (per_script_stats ? sql_script[i].stats.cnt : total->cnt);
 				}
 			}
 		}
 
-		if (has_tpmc && bench_duration > 0.0)
+		if (has_nopm && bench_duration > 0.0)
 		{
-			tpmc = (new_order_cnt * 60.0) / bench_duration;
-			printf("tpmC = %.2f (New-Order transactions: " INT64_FORMAT ")\n",
-				   tpmc, new_order_cnt);
+			nopm = (new_order_cnt * 60.0) / bench_duration;
+			printf("nopm = %.2f (New-Order transactions: " INT64_FORMAT ")\n",
+				   nopm, new_order_cnt);
 		}
-		if (has_qphh && bench_duration > 0.0)
+		if (has_qph && bench_duration > 0.0)
 		{
-			qphh = (tpch_query_cnt * 3600.0) / bench_duration;
-			printf("QphH@SF%d = %.2f (queries: " INT64_FORMAT ")\n",
-				   scale, qphh, tpch_query_cnt);
+			qph = (tpch_query_cnt * 3600.0) / bench_duration;
+			printf("qph@SF%d = %.2f (queries: " INT64_FORMAT ")\n",
+				   scale, qph, tpch_query_cnt);
 		}
 
 		/* Evaluate and report SLA compliance rules */
@@ -3547,7 +3592,7 @@ printResults(StatsData *total,
 				pg_fatal("could not open JSON report file \"%s\": %m",
 						 json_report_file);
 
-			writeReportJsonObject(jfp, total, bench_duration, tpmc, qphh);
+			writeReportJsonObject(jfp, total, bench_duration, nopm, qph);
 			fclose(jfp);
 		}
 	}

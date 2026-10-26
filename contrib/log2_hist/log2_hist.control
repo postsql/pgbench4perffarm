@@ -1,0 +1,5 @@
+# log2_hist extension
+comment = '64-bucket RLE-compressed log2(V+1) histogram data type'
+default_version = '1.0'
+module_pathname = '$libdir/log2_hist'
+relocatable = true

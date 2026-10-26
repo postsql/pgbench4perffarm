@@ -1,0 +1,628 @@
+CREATE EXTENSION log2_hist;
+-- =========================================================================
+-- 1. Bucket Index Formula: bucket(V) = 64 - clz64(V) over 0..63
+-- =========================================================================
+SELECT
+    log2_hist_bucket(0) AS b0,
+    log2_hist_bucket(1) AS b1,
+    log2_hist_bucket(2) AS b2_lo,
+    log2_hist_bucket(3) AS b2_hi,
+    log2_hist_bucket(4) AS b3_lo,
+    log2_hist_bucket(7) AS b3_hi,
+    log2_hist_bucket(8) AS b4_lo,
+    log2_hist_bucket(15) AS b4_hi,
+    log2_hist_bucket(9223372036854775807) AS b63_max;
+ b0 | b1 | b2_lo | b2_hi | b3_lo | b3_hi | b4_lo | b4_hi | b63_max 
+----+----+-------+-------+-------+-------+-------+-------+---------
+  0 |  1 |     2 |     2 |     3 |     3 |     4 |     4 |      63
+(1 row)
+
+-- Verify boundaries for all 64 buckets (k = 1..62: 2^(k-1)..2^k-1 -> bucket k)
+SELECT bool_and(
+    log2_hist_bucket((1::bigint << (k - 1))) = k AND
+    log2_hist_bucket(((1::bigint << k) - 1)) = k
+) AS all_boundaries_ok
+FROM generate_series(1, 62) AS k;
+ all_boundaries_ok 
+-------------------
+ t
+(1 row)
+
+SELECT
+    log2_hist_bucket(1::bigint << 62) AS b63_lo,
+    log2_hist_bucket(9223372036854775807) AS b63_hi;
+ b63_lo | b63_hi 
+--------+--------
+     63 |     63
+(1 row)
+
+-- Negative input handling: 2nd argument and GUC flag
+SELECT log2_hist_bucket(-1, true) AS neg_clamped,
+       log2_hist_bucket(-9223372036854775808, true) AS int64_min_clamped;
+ neg_clamped | int64_min_clamped 
+-------------+-------------------
+           0 |                 0
+(1 row)
+
+SET log2_hist.clamp_negative = on;
+SELECT log2_hist_bucket(-1) AS guc_neg_clamped,
+       ('[]'::log2_hist + (-500)) AS guc_add_neg;
+ guc_neg_clamped | guc_add_neg 
+-----------------+-------------
+               0 | [(0){1}]
+(1 row)
+
+RESET log2_hist.clamp_negative;
+-- =========================================================================
+-- 2. Textual I/O, Binary Send/Recv & RLE Canonicalization
+-- =========================================================================
+SELECT
+    '[]'::log2_hist AS empty_hist,
+    pg_column_size('[]'::log2_hist) AS empty_mem_bytes,
+    '[(0){5,10,15}]'::log2_hist AS run_at_0,
+    '[(3){10}(1){20}(4){30,40}]'::log2_hist AS multi_run,
+    '[(63){99}]'::log2_hist AS bucket_63_only;
+ empty_hist | empty_mem_bytes |    run_at_0    |         multi_run          | bucket_63_only 
+------------+-----------------+----------------+----------------------------+----------------
+ []         |               8 | [(0){5,10,15}] | [(3){10}(1){20}(4){30,40}] | [(63){99}]
+(1 row)
+
+-- Non-canonical inputs must normalize to canonical RLE output
+SELECT
+    '[(2){10,0,20}]'::log2_hist AS split_zero_inside_run,
+    '[(2){10}(0){20}]'::log2_hist AS merged_adjacent_runs,
+    '[(2){10,0,0}]'::log2_hist AS stripped_trailing_zeros,
+    '[(5){0,0}(3){0}]'::log2_hist AS all_zero_collapsed,
+    ' [ ( 1 ) { 10 , 20 } ( 2 ) { 30 } ] '::log2_hist AS whitespace_normalized,
+    '[(0){18446744073709551615}]'::log2_hist AS uint64_max_bucket;
+ split_zero_inside_run | merged_adjacent_runs | stripped_trailing_zeros | all_zero_collapsed | whitespace_normalized |      uint64_max_bucket      
+-----------------------+----------------------+-------------------------+--------------------+-----------------------+-----------------------------
+ [(2){10}(1){20}]      | [(2){10,20}]         | [(2){10}]               | []                 | [(1){10,20}(2){30}]   | [(0){18446744073709551615}]
+(1 row)
+
+-- Binary wire format verification via log2_hist_send() / log2_hist_from_bytea()
+SELECT
+    encode(log2_hist_send('[]'::log2_hist), 'hex') AS empty_wire_hex,
+    encode(log2_hist_send('[(3){10}(1){20}]'::log2_hist), 'hex') AS run2_wire_hex;
+ empty_wire_hex |                  run2_wire_hex                   
+----------------+--------------------------------------------------
+ 00000000       | 0202000003010101000000000000000a0000000000000014
+(1 row)
+
+SELECT
+    bool_and(h = log2_hist_from_bytea(log2_hist_send(h))) AS binary_roundtrip_all_ok
+FROM (
+    VALUES
+        ('[]'::log2_hist),
+        ('[(0){1,2,3}]'::log2_hist),
+        ('[(3){10}(1){20}(50){18446744073709551615}]'::log2_hist),
+        ('[(63){42}]'::log2_hist)
+) AS t(h);
+ binary_roundtrip_all_ok 
+-------------------------
+ t
+(1 row)
+
+-- =========================================================================
+-- 3. Raw 0-Based (0..63) Subscripting & Slicing on log2_hist
+-- =========================================================================
+WITH sample AS (
+    SELECT '[(3){10,20}(1){30}]'::log2_hist AS h
+)
+SELECT
+    h[-1] AS out_of_bounds_low,
+    h[0] AS b0,
+    h[2] AS b2,
+    h[3] AS b3,
+    h[4] AS b4,
+    h[5] AS b5,
+    h[6] AS b6,
+    h[7] AS b7,
+    h[63] AS b63,
+    h[64] AS out_of_bounds_high,
+    h[NULL::int] AS null_subscript
+FROM sample;
+ out_of_bounds_low | b0 | b2 | b3 | b4 | b5 | b6 | b7 | b63 | out_of_bounds_high | null_subscript 
+-------------------+----+----+----+----+----+----+----+-----+--------------------+----------------
+                   |  0 |  0 | 10 | 20 |  0 | 30 |  0 |   0 |                    |               
+(1 row)
+
+-- Slice subscripting h[lo:hi]
+WITH sample AS (
+    SELECT '[(1){10,20}(2){30,40}(1){50}]'::log2_hist AS h
+)
+SELECT
+    h[1:2] AS slice_1_2,
+    h[2:5] AS slice_2_5,
+    h[:2] AS slice_to_2,
+    h[5:] AS slice_from_5,
+    h[:] AS slice_all,
+    h[10:20] AS slice_empty_range,
+    h[5:2] AS slice_inverted
+FROM sample;
+  slice_1_2   |    slice_2_5     |  slice_to_2  |    slice_from_5     |           slice_all           | slice_empty_range | slice_inverted 
+--------------+------------------+--------------+---------------------+-------------------------------+-------------------+----------------
+ [(1){10,20}] | [(2){20}(2){30}] | [(1){10,20}] | [(5){30,40}(1){50}] | [(1){10,20}(2){30,40}(1){50}] | []                | []
+(1 row)
+
+-- =========================================================================
+-- 4. 0-Based Live-Range bigint[] Casting & Full 64-Bucket Expansion
+-- =========================================================================
+SELECT
+    ('[]'::log2_hist)::bigint[] AS empty_arr,
+    cardinality(('[]'::log2_hist)::bigint[]) AS empty_card;
+ empty_arr | empty_card 
+-----------+------------
+ {}        |          0
+(1 row)
+
+SELECT
+    ('[(0){5,10}]'::log2_hist)::bigint[] AS b0_live_arr,
+    array_lower(('[(0){5,10}]'::log2_hist)::bigint[], 1) AS b0_lbound,
+    array_upper(('[(0){5,10}]'::log2_hist)::bigint[], 1) AS b0_ubound,
+    (('[(0){5,10}]'::log2_hist)::bigint[])[0] AS b0_elem0,
+    (('[(0){5,10}]'::log2_hist)::bigint[])[1] AS b0_elem1,
+    (('[(0){5,10}]'::log2_hist)::bigint[])[2] AS b0_elem2;
+ b0_live_arr  | b0_lbound | b0_ubound | b0_elem0 | b0_elem1 | b0_elem2 
+--------------+-----------+-----------+----------+----------+----------
+ [0:1]={5,10} |         0 |         1 |        5 |       10 |         
+(1 row)
+
+SELECT
+    ('[(3){10}(1){20}]'::log2_hist)::bigint[] AS b3_live_arr,
+    array_lower(('[(3){10}(1){20}]'::log2_hist)::bigint[], 1) AS b3_lbound,
+    array_upper(('[(3){10}(1){20}]'::log2_hist)::bigint[], 1) AS b3_ubound,
+    (('[(3){10}(1){20}]'::log2_hist)::bigint[])[2] AS b3_elem2,
+    (('[(3){10}(1){20}]'::log2_hist)::bigint[])[3] AS b3_elem3,
+    (('[(3){10}(1){20}]'::log2_hist)::bigint[])[4] AS b3_elem4,
+    (('[(3){10}(1){20}]'::log2_hist)::bigint[])[5] AS b3_elem5,
+    (('[(3){10}(1){20}]'::log2_hist)::bigint[])[6] AS b3_elem6;
+   b3_live_arr   | b3_lbound | b3_ubound | b3_elem2 | b3_elem3 | b3_elem4 | b3_elem5 | b3_elem6 
+-----------------+-----------+-----------+----------+----------+----------+----------+----------
+ [3:5]={10,0,20} |         3 |         5 |          |       10 |        0 |       20 |         
+(1 row)
+
+-- Verify raw h[i] matches (h::bigint[])[i] across the live range
+WITH sample AS (
+    SELECT '[(3){10}(1){20}]'::log2_hist AS h
+)
+SELECT
+    i,
+    h[i] AS raw_val,
+    (h::bigint[])[i] AS arr_val
+FROM sample, generate_series(2, 6) AS i;
+ i | raw_val | arr_val 
+---+---------+---------
+ 2 |       0 |        
+ 3 |      10 |      10
+ 4 |       0 |       0
+ 5 |      20 |      20
+ 6 |       0 |        
+(5 rows)
+
+-- Round-trip bijection: (h::bigint[])::log2_hist = h for all histograms
+SELECT
+    h,
+    h::bigint[] AS live_arr,
+    (h::bigint[])::log2_hist = h AS roundtrip_ok
+FROM (
+    VALUES
+        ('[]'::log2_hist),
+        ('[(0){7}]'::log2_hist),
+        ('[(0){5,10}]'::log2_hist),
+        ('[(1){10,20}]'::log2_hist),
+        ('[(3){10}(1){20}]'::log2_hist),
+        ('[(63){99}]'::log2_hist),
+        ('[(0){1}(62){2}]'::log2_hist)
+) AS t(h);
+        h         |                                                                 live_arr                                                                 | roundtrip_ok 
+------------------+------------------------------------------------------------------------------------------------------------------------------------------+--------------
+ []               | {}                                                                                                                                       | t
+ [(0){7}]         | [0:0]={7}                                                                                                                                | t
+ [(0){5,10}]      | [0:1]={5,10}                                                                                                                             | t
+ [(1){10,20}]     | {10,20}                                                                                                                                  | t
+ [(3){10}(1){20}] | [3:5]={10,0,20}                                                                                                                          | t
+ [(63){99}]       | [63:63]={99}                                                                                                                             | t
+ [(0){1}(62){2}]  | [0:63]={1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2} | t
+(7 rows)
+
+-- Casting short and offset bigint[] arrays to log2_hist
+SELECT
+    '{}'::bigint[]::log2_hist AS from_empty_arr,
+    '[0:2]={1,2,3}'::bigint[]::log2_hist AS from_0_based_short,
+    '[10:12]={7,0,8}'::bigint[]::log2_hist AS from_offset_short,
+    '{10,20}'::bigint[]::log2_hist AS from_default_1_based;
+ from_empty_arr | from_0_based_short | from_offset_short | from_default_1_based 
+----------------+--------------------+-------------------+----------------------
+ []             | [(0){1,2,3}]       | [(10){7}(1){8}]   | [(1){10,20}]
+(1 row)
+
+-- Full 64-element expansion via log2_hist_buckets() and log2_hist_to_array()
+SELECT
+    cardinality(log2_hist_buckets('[(3){10}(1){20}]'::log2_hist)) AS full_card,
+    array_lower(log2_hist_buckets('[(3){10}(1){20}]'::log2_hist), 1) AS full_0_lbound,
+    array_upper(log2_hist_buckets('[(3){10}(1){20}]'::log2_hist), 1) AS full_0_ubound,
+    (log2_hist_buckets('[(3){10}(1){20}]'::log2_hist))[3] AS full_b3,
+    (log2_hist_buckets('[(3){10}(1){20}]'::log2_hist))[4] AS full_b4,
+    (log2_hist_buckets('[(3){10}(1){20}]'::log2_hist))[5] AS full_b5,
+    log2_hist_buckets('[(3){10}(1){20}]'::log2_hist)::log2_hist AS roundtrip_from_full_0;
+ full_card | full_0_lbound | full_0_ubound | full_b3 | full_b4 | full_b5 | roundtrip_from_full_0 
+-----------+---------------+---------------+---------+---------+---------+-----------------------
+        64 |             0 |            63 |      10 |       0 |      20 | [(3){10}(1){20}]
+(1 row)
+
+-- 1-based full 64-element array round-trip
+SELECT
+    array_lower(log2_hist_to_array('[(0){11}(62){22}]'::log2_hist, true, 1), 1) AS full_1_lbound,
+    array_upper(log2_hist_to_array('[(0){11}(62){22}]'::log2_hist, true, 1), 1) AS full_1_ubound,
+    log2_hist_to_array('[(0){11}(62){22}]'::log2_hist, true, 1)::log2_hist AS roundtrip_from_full_1,
+    log2_hist_total_count(array_fill(1::bigint, ARRAY[64])::log2_hist) AS fill_64_total;
+ full_1_lbound | full_1_ubound | roundtrip_from_full_1 | fill_64_total 
+---------------+---------------+-----------------------+---------------
+             1 |            64 | [(0){11}(62){22}]     |            64
+(1 row)
+
+-- =========================================================================
+-- 5. Observation Addition, Merging & Saturating uint64 Arithmetic
+-- =========================================================================
+SELECT
+    log2_hist_empty() + 0 + 1 + 2 + 3 + 4 + 7 + 8 AS added_seq,
+    8 + (0 + log2_hist_empty()) AS added_commuted,
+    log2_hist_add('[(0){1}]'::log2_hist, '[(1){2}]'::log2_hist) AS added_hist_alias,
+    log2_hist_single(15) AS single_15,
+    log2_hist_single(-5, true, 10) AS single_neg_clamped_10,
+    log2_hist_add('[(0){2}]'::log2_hist, -10, true, 5) AS add_neg_clamped_5,
+    log2_hist_total_count(log2_hist_empty() + 0 + 1 + 2 + 3 + 4 + 7 + 8) AS total_cnt;
+    added_seq     | added_commuted | added_hist_alias | single_15 | single_neg_clamped_10 | add_neg_clamped_5 | total_cnt 
+------------------+----------------+------------------+-----------+-----------------------+-------------------+-----------
+ [(0){1,1,2,2,1}] | [(0){1}(3){1}] | [(0){1,2}]       | [(4){1}]  | [(0){10}]             | [(0){7}]          |         7
+(1 row)
+
+-- Inspection & analytics functions: min_bucket, max_bucket, percentile
+SELECT
+    log2_hist_min_bucket('[]'::log2_hist) AS empty_min,
+    log2_hist_max_bucket('[]'::log2_hist) AS empty_max,
+    log2_hist_percentile('[]'::log2_hist, 0.5) AS empty_p50,
+    log2_hist_min_bucket('[(3){10}(1){20}(4){30}]'::log2_hist) AS min_b,
+    log2_hist_max_bucket('[(3){10}(1){20}(4){30}]'::log2_hist) AS max_b,
+    log2_hist_percentile('[(0){10}]'::log2_hist, 0.5) AS b0_p50,
+    log2_hist_percentile('[(3){10}(1){20}(4){70}]'::log2_hist, 0.0) AS p0,
+    log2_hist_percentile('[(3){10}(1){20}(4){70}]'::log2_hist, 0.10) AS p10,
+    log2_hist_percentile('[(3){10}(1){20}(4){70}]'::log2_hist, 0.25) AS p25,
+    log2_hist_percentile('[(3){10}(1){20}(4){70}]'::log2_hist, 0.50) AS p50,
+    log2_hist_percentile('[(3){10}(1){20}(4){70}]'::log2_hist, 1.00) AS p100;
+ empty_min | empty_max | empty_p50 | min_b | max_b | b0_p50 | p0 | p10 | p25 | p50 | p100 
+-----------+-----------+-----------+-------+-------+--------+----+-----+-----+-----+------
+           |           |           |     3 |    10 |      0 |  4 |   7 |  27 | 658 | 1023
+(1 row)
+
+-- Saturating addition at UINT64_MAX (18446744073709551615)
+SELECT
+    '[(0){18446744073709551610}(5){100}]'::log2_hist +
+    '[(0){100}(5){200}]'::log2_hist AS saturated_merge;
+           saturated_merge           
+-------------------------------------
+ [(0){18446744073709551615}(5){300}]
+(1 row)
+
+-- Verify raw 64-bit counter reinterpretation in bigint[] (-1::bigint == UINT64_MAX)
+SELECT
+    (('[(0){18446744073709551615}]'::log2_hist)::bigint[])[0] AS uint64_max_as_int8,
+    ('[0:0]={-1}'::bigint[])::log2_hist AS int8_neg1_as_uint64_max;
+ uint64_max_as_int8 |   int8_neg1_as_uint64_max   
+--------------------+-----------------------------
+                 -1 | [(0){18446744073709551615}]
+(1 row)
+
+-- =========================================================================
+-- 6. B-Tree / Hash Operator Classes, DISTINCT, GROUP BY & Catalog Sanity
+-- =========================================================================
+-- Verify oprcanmerge and oprcanhash are backed by pg_amop entries (opr_sanity check)
+SELECT
+    o.oprname,
+    o.oprcanmerge,
+    o.oprcanhash,
+    EXISTS (
+        SELECT 1 FROM pg_amop a
+        JOIN pg_opclass c ON a.amopfamily = c.opcfamily
+        JOIN pg_am m ON c.opcmethod = m.oid
+        WHERE a.amopopr = o.oid AND m.amname = 'btree'
+    ) AS has_btree_amop,
+    EXISTS (
+        SELECT 1 FROM pg_amop a
+        JOIN pg_opclass c ON a.amopfamily = c.opcfamily
+        JOIN pg_am m ON c.opcmethod = m.oid
+        WHERE a.amopopr = o.oid AND m.amname = 'hash'
+    ) AS has_hash_amop
+FROM pg_operator o
+WHERE o.oprname = '='
+  AND o.oprleft = 'log2_hist'::regtype
+  AND o.oprright = 'log2_hist'::regtype;
+ oprname | oprcanmerge | oprcanhash | has_btree_amop | has_hash_amop 
+---------+-------------+------------+----------------+---------------
+ =       | t           | t          | t              | t
+(1 row)
+
+-- Ordering, comparison operators, DISTINCT, and GROUP BY on log2_hist
+SELECT
+    '[]'::log2_hist < '[(0){1}]'::log2_hist AS empty_lt_b0,
+    '[(0){1}]'::log2_hist < '[(0){2}]'::log2_hist AS b0_1_lt_2,
+    '[(1){1}]'::log2_hist < '[(0){1}]'::log2_hist AS b1_lt_b0,
+    log2_hist_cmp('[(2){5}]'::log2_hist, '[(2){5}]'::log2_hist) AS cmp_eq,
+    log2_hist_hash('[(3){10}(1){20}]'::log2_hist) =
+        log2_hist_hash('[(3){10,0,20}]'::log2_hist) AS canonical_hash_eq,
+    log2_hist_hash_extended('[(3){10}(1){20}]'::log2_hist, 42) =
+        log2_hist_hash_extended('[(3){10,0,20}]'::log2_hist, 42) AS canonical_hash_ext_eq;
+ empty_lt_b0 | b0_1_lt_2 | b1_lt_b0 | cmp_eq | canonical_hash_eq | canonical_hash_ext_eq 
+-------------+-----------+----------+--------+-------------------+-----------------------
+ t           | t         | t        |      0 | t                 | t
+(1 row)
+
+SELECT h, count(*) AS cnt
+FROM (
+    VALUES
+        ('[(2){10}]'::log2_hist),
+        ('[]'::log2_hist),
+        ('[(2){10,0}]'::log2_hist),
+        ('[(0){1}]'::log2_hist),
+        ('[]'::log2_hist)
+) AS v(h)
+GROUP BY h
+ORDER BY h;
+     h     | cnt 
+-----------+-----
+ []        |   2
+ [(2){10}] |   2
+ [(0){1}]  |   1
+(3 rows)
+
+-- =========================================================================
+-- 7. Table Storage, Subscript Assignment, Aggregates & Unprivileged Role
+-- =========================================================================
+CREATE TABLE hist_telemetry (
+    id serial PRIMARY KEY,
+    grp text NOT NULL,
+    h log2_hist NOT NULL
+);
+CREATE INDEX hist_telemetry_btree_idx ON hist_telemetry USING btree (h);
+CREATE INDEX hist_telemetry_hash_idx ON hist_telemetry USING hash (h);
+INSERT INTO hist_telemetry (grp, h) VALUES
+    ('api', '[]'::log2_hist + 0 + 1 + 2 + 3),
+    ('api', '[]'::log2_hist + 1 + 3 + 7 + 1024),
+    ('db',  '[(10){50,100}]'::log2_hist);
+-- Subscript assignment in UPDATE (modify existing bucket, zero a bucket, add bucket 63)
+UPDATE hist_telemetry
+SET h[0] = 10,
+    h[1] = 0,
+    h[63] = 3
+WHERE id = 1;
+SELECT id, grp, h, h[0] AS b0, h[1] AS b1, h[2] AS b2, h[63] AS b63, log2_hist_total_count(h) AS total
+FROM hist_telemetry
+ORDER BY id;
+ id | grp |           h            | b0 | b1 | b2 | b63 | total 
+----+-----+------------------------+----+----+----+-----+-------
+  1 | api | [(0){10}(1){2}(60){3}] | 10 |  0 |  2 |   3 |    15
+  2 | api | [(1){1,1,1}(7){1}]     |  0 |  1 |  1 |   0 |     4
+  3 | db  | [(10){50,100}]         |  0 |  0 |  0 |   0 |   150
+(3 rows)
+
+-- Aggregate observations with log2_hist_agg and merge with log2_hist_merge_agg
+SELECT
+    log2_hist_agg(v) AS agg_hist,
+    log2_hist_total_count(log2_hist_agg(v)) AS agg_total
+FROM (VALUES (0), (1), (2), (3), (4), (7), (8), (15), (1023), (1024), (NULL)) AS t(v);
+         agg_hist         | agg_total 
+--------------------------+-----------
+ [(0){1,1,2,2,2}(5){1,1}] |        10
+(1 row)
+
+SELECT
+    log2_hist_agg(v, true) AS agg_clamped_hist
+FROM (VALUES (-100), (-1), (0), (1), (2)) AS t(v);
+ agg_clamped_hist 
+------------------
+ [(0){3,1,1}]
+(1 row)
+
+SELECT
+    grp,
+    log2_hist_merge_agg(h) AS merged_grp_hist,
+    log2_hist_total_count(log2_hist_merge_agg(h)) AS merged_grp_total
+FROM hist_telemetry
+GROUP BY grp
+ORDER BY grp;
+ grp |       merged_grp_hist        | merged_grp_total 
+-----+------------------------------+------------------
+ api | [(0){10,1,3,1}(7){1}(51){3}] |               19
+ db  | [(10){50,100}]               |              150
+(2 rows)
+
+-- Parallel aggregation exercising combinefn / serialfn / deserialfn across multiple runs
+CREATE TABLE hist_parallel_samples AS
+SELECT
+    (i % 10) AS grp,
+    (1::bigint << (i % 60)) AS v
+FROM generate_series(0, 3999) AS i;
+SET parallel_setup_cost = 0;
+SET parallel_tuple_cost = 0;
+SET min_parallel_table_scan_size = 0;
+SET max_parallel_workers_per_gather = 2;
+SELECT
+    log2_hist_total_count(log2_hist_agg(v)) AS parallel_total,
+    (log2_hist_agg(v))[1] AS parallel_b1,
+    (log2_hist_agg(v))[60] AS parallel_b60
+FROM hist_parallel_samples;
+ parallel_total | parallel_b1 | parallel_b60 
+----------------+-------------+--------------
+           4000 |          67 |           66
+(1 row)
+
+SELECT
+    count(*) AS num_groups,
+    sum(log2_hist_total_count(h)) AS sum_group_totals
+FROM (
+    SELECT grp, log2_hist_agg(v) AS h
+    FROM hist_parallel_samples
+    GROUP BY grp
+) AS s;
+ num_groups | sum_group_totals 
+------------+------------------
+         10 |             4000
+(1 row)
+
+RESET parallel_setup_cost;
+RESET parallel_tuple_cost;
+RESET min_parallel_table_scan_size;
+RESET max_parallel_workers_per_gather;
+DROP TABLE hist_parallel_samples;
+-- Test execution under an unprivileged role
+CREATE ROLE regress_log2_hist_user;
+GRANT SELECT, INSERT, UPDATE ON hist_telemetry TO regress_log2_hist_user;
+SET ROLE regress_log2_hist_user;
+SELECT grp, log2_hist_merge_agg(h) FROM hist_telemetry GROUP BY grp ORDER BY grp;
+ grp |     log2_hist_merge_agg      
+-----+------------------------------
+ api | [(0){10,1,3,1}(7){1}(51){3}]
+ db  | [(10){50,100}]
+(2 rows)
+
+SELECT ('[(2){5,10}]'::log2_hist)[2] AS unpriv_sub;
+ unpriv_sub 
+------------
+          5
+(1 row)
+
+RESET ROLE;
+REVOKE ALL ON hist_telemetry FROM regress_log2_hist_user;
+DROP ROLE regress_log2_hist_user;
+DROP TABLE hist_telemetry;
+-- =========================================================================
+-- 8. Error & Boundary Cases
+-- =========================================================================
+-- Negative value without clamp_negative
+SELECT log2_hist_bucket(-1);
+ERROR:  log2_hist value cannot be negative: -1
+HINT:  Pass clamp_negative = true or SET log2_hist.clamp_negative = on to clamp negative values to bucket 0.
+SELECT log2_hist_bucket(-1, false);
+ERROR:  log2_hist value cannot be negative: -1
+HINT:  Pass clamp_negative = true or SET log2_hist.clamp_negative = on to clamp negative values to bucket 0.
+SELECT '[]'::log2_hist + (-1);
+ERROR:  log2_hist value cannot be negative: -1
+HINT:  Pass clamp_negative = true or SET log2_hist.clamp_negative = on to clamp negative values to bucket 0.
+SELECT log2_hist_add('[]'::log2_hist, -1, false, 1);
+ERROR:  log2_hist value cannot be negative: -1
+HINT:  Pass clamp_negative = true or SET log2_hist.clamp_negative = on to clamp negative values to bucket 0.
+SELECT log2_hist_add('[]'::log2_hist, 1, false, -5);
+ERROR:  log2_hist count cannot be negative: -5
+SELECT log2_hist_agg(v) FROM (VALUES (1), (-1)) AS t(v);
+ERROR:  log2_hist value cannot be negative: -1
+HINT:  Pass clamp_negative = true or SET log2_hist.clamp_negative = on to clamp negative values to bucket 0.
+-- Invalid percentile arguments
+SELECT log2_hist_percentile('[(0){1}]'::log2_hist, -0.1);
+ERROR:  log2_hist_percentile quantile must be in [0.0, 1.0]: -0.1
+SELECT log2_hist_percentile('[(0){1}]'::log2_hist, 1.1);
+ERROR:  log2_hist_percentile quantile must be in [0.0, 1.0]: 1.1
+SELECT log2_hist_percentile('[(0){1}]'::log2_hist, 'NaN'::float8);
+ERROR:  log2_hist_percentile quantile must be in [0.0, 1.0]: NaN
+-- Invalid index_base in log2_hist_to_array
+SELECT log2_hist_to_array('[(0){1}]'::log2_hist, true, 2);
+ERROR:  log2_hist_to_array index_base must be 0 or 1: 2
+SELECT log2_hist_to_array('[(0){1}]'::log2_hist, true, 2147483647);
+ERROR:  log2_hist_to_array index_base must be 0 or 1: 2147483647
+-- Malformed text representations
+SELECT 'invalid'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "invalid"
+LINE 1: SELECT 'invalid'::log2_hist;
+               ^
+DETAIL:  Histogram representation must begin with '['.
+SELECT '[1,2,3]'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "[1,2,3]"
+LINE 1: SELECT '[1,2,3]'::log2_hist;
+               ^
+DETAIL:  Expected '(' to start zero-bucket count.
+SELECT '[(0){}]'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "[(0){}]"
+LINE 1: SELECT '[(0){}]'::log2_hist;
+               ^
+DETAIL:  Expected unsigned integer bucket count inside '{...}'.
+SELECT '[(0){1,}]'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "[(0){1,}]"
+LINE 1: SELECT '[(0){1,}]'::log2_hist;
+               ^
+DETAIL:  Expected unsigned integer bucket count inside '{...}'.
+SELECT '[(0){-1}]'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "[(0){-1}]"
+LINE 1: SELECT '[(0){-1}]'::log2_hist;
+               ^
+DETAIL:  Expected unsigned integer bucket count inside '{...}'.
+SELECT '[(64){1}]'::log2_hist;
+ERROR:  log2_hist bucket index out of bounds (0..63) in "[(64){1}]"
+LINE 1: SELECT '[(64){1}]'::log2_hist;
+               ^
+SELECT '[(60){1,2,3,4,5}]'::log2_hist;
+ERROR:  log2_hist bucket index exceeds maximum bucket 63 in "[(60){1,2,3,4,5}]"
+LINE 1: SELECT '[(60){1,2,3,4,5}]'::log2_hist;
+               ^
+SELECT '[(0){18446744073709551616}]'::log2_hist;
+ERROR:  bucket count out of uint64 range in log2_hist: "[(0){18446744073709551616}]"
+LINE 1: SELECT '[(0){18446744073709551616}]'::log2_hist;
+               ^
+SELECT '[(0){1}]extra'::log2_hist;
+ERROR:  invalid input syntax for type log2_hist: "[(0){1}]extra"
+LINE 1: SELECT '[(0){1}]extra'::log2_hist;
+               ^
+DETAIL:  Unexpected trailing characters after ']'.
+-- Malformed binary wire payloads
+SELECT log2_hist_from_bytea('\x21000000'::bytea);
+ERROR:  invalid binary header for log2_hist
+SELECT log2_hist_from_bytea('\x0101000040010000000000000001'::bytea);
+ERROR:  invalid RLE run in binary log2_hist
+-- Invalid array casts
+SELECT '[-1:0]={1,2}'::bigint[]::log2_hist;
+ERROR:  bigint[] bounds [-1:0] out of range for 64-bucket log2_hist (0..63)
+SELECT '[60:64]={1,2,3,4,5}'::bigint[]::log2_hist;
+ERROR:  bigint[] bounds [60:64] out of range for 64-bucket log2_hist (0..63)
+SELECT '[1000:1001]={1,2}'::bigint[]::log2_hist;
+ERROR:  bigint[] bounds [1000:1001] out of range for 64-bucket log2_hist (0..63)
+SELECT '{{1,2},{3,4}}'::bigint[]::log2_hist;
+ERROR:  log2_hist requires a 1-dimensional bigint[] array
+SELECT ARRAY[1::bigint, NULL::bigint]::log2_hist;
+ERROR:  log2_hist array cannot contain NULL elements
+-- Invalid subscript assignments
+DO $$
+DECLARE
+    h log2_hist := '[]'::log2_hist;
+BEGIN
+    h[-1] := 1;
+END;
+$$;
+ERROR:  log2_hist subscript -1 out of bounds (0..63)
+CONTEXT:  PL/pgSQL function inline_code_block line 5 at assignment
+DO $$
+DECLARE
+    h log2_hist := '[]'::log2_hist;
+BEGIN
+    h[64] := 1;
+END;
+$$;
+ERROR:  log2_hist subscript 64 out of bounds (0..63)
+CONTEXT:  PL/pgSQL function inline_code_block line 5 at assignment
+DO $$
+DECLARE
+    h log2_hist := '[]'::log2_hist;
+BEGIN
+    h[NULL] := 1;
+END;
+$$;
+ERROR:  log2_hist subscript in assignment must not be null
+CONTEXT:  PL/pgSQL function inline_code_block line 5 at assignment
+DO $$
+DECLARE
+    h log2_hist := '[]'::log2_hist;
+BEGIN
+    h[0] := NULL;
+END;
+$$;
+ERROR:  log2_hist bucket value in assignment must not be null
+CONTEXT:  PL/pgSQL function inline_code_block line 5 at assignment
+DROP EXTENSION log2_hist;

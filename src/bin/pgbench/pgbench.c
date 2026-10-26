@@ -829,6 +829,8 @@ main(int argc, char **argv)
 		{"run-label", required_argument, NULL, 40},
 		{"driver", required_argument, NULL, 41},
 		{"dialect", required_argument, NULL, 42},
+		{"export-dataset", required_argument, NULL, 43},
+		{"load-dataset", required_argument, NULL, 44},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -1418,6 +1420,14 @@ main(int argc, char **argv)
 			case 42:			/* dialect */
 				setDriverDialect(optarg);
 				break;
+			case 43:			/* export-dataset */
+				pg_free(export_dataset_dir);
+				export_dataset_dir = pg_strdup(optarg);
+				break;
+			case 44:			/* load-dataset */
+				pg_free(load_dataset_dir);
+				load_dataset_dir = pg_strdup(optarg);
+				break;
 			default:
 				/* getopt_long already emitted a complaint */
 				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
@@ -1573,8 +1583,9 @@ main(int argc, char **argv)
 #endif							/* HAVE_GETRLIMIT */
 	}
 
-	/* set default script if none (unless running standalone --copy-dataset) */
-	if (num_scripts == 0 && !is_init_mode && num_copy_dataset_specs == 0)
+	/* set default script if none (unless running standalone --copy-dataset / --export-dataset / --load-dataset) */
+	if (num_scripts == 0 && !is_init_mode && num_copy_dataset_specs == 0 &&
+		export_dataset_dir == NULL && load_dataset_dir == NULL)
 	{
 		if (replay_trace_file != NULL)
 		{
@@ -1598,6 +1609,8 @@ main(int argc, char **argv)
 	{
 		Command   **commands = sql_script[i].commands;
 
+		coalesce_spanner_ddl_commands(commands);
+
 		for (int j = 0; commands[j] != NULL; j++)
 			if (commands[j]->type == SQL_COMMAND)
 				postprocess_sql_command(commands[j]);
@@ -1606,7 +1619,8 @@ main(int argc, char **argv)
 		total_weight += sql_script[i].weight;
 	}
 
-	if (total_weight == 0 && !is_init_mode && num_copy_dataset_specs == 0)
+	if (total_weight == 0 && !is_init_mode && num_copy_dataset_specs == 0 &&
+		export_dataset_dir == NULL && load_dataset_dir == NULL)
 		pg_fatal("total script weight must not be zero");
 
 	/* show per script stats if several scripts, groups, SLAs, JSON report, or --log-db are used */
@@ -1643,6 +1657,15 @@ main(int argc, char **argv)
 		if (num_config_init_steps > 0)
 		{
 			runConfigInitSteps(&state[0].variables);
+			active_driver->shutdown_global();
+			exit(0);
+		}
+
+		if (load_dataset_dir != NULL)
+		{
+			loadCanonicalDataset(load_dataset_dir, true);
+			if (export_dataset_dir != NULL)
+				exportCanonicalDataset(export_dataset_dir);
 			active_driver->shutdown_global();
 			exit(0);
 		}
@@ -1694,6 +1717,8 @@ main(int argc, char **argv)
 			nthreads = saved_nthreads;
 			active_driver->finish(con);
 		}
+		if (export_dataset_dir != NULL)
+			exportCanonicalDataset(export_dataset_dir);
 		active_driver->shutdown_global();
 		exit(0);
 	}
@@ -1748,6 +1773,17 @@ main(int argc, char **argv)
 	if (!active_driver->init_global(dbName, nthreads, nclients))
 		exit(1);
 
+	/* Standalone --export-dataset or --load-dataset without any benchmark scripts */
+	if (num_scripts == 0 && (export_dataset_dir != NULL || load_dataset_dir != NULL))
+	{
+		if (load_dataset_dir != NULL)
+			loadCanonicalDataset(load_dataset_dir, true);
+		if (export_dataset_dir != NULL)
+			exportCanonicalDataset(export_dataset_dir);
+		active_driver->shutdown_global();
+		exit(0);
+	}
+
 	/* Standalone --copy-dataset without any benchmark scripts */
 	if (num_copy_dataset_specs > 0 && num_scripts == 0)
 	{
@@ -1761,6 +1797,9 @@ main(int argc, char **argv)
 		active_driver->shutdown_global();
 		exit(0);
 	}
+
+	if (load_dataset_dir != NULL)
+		loadCanonicalDataset(load_dataset_dir, false);
 
 	/*
 	 * save main process id in the global variable because process id will be
@@ -1906,6 +1945,52 @@ main(int argc, char **argv)
 			if (!putVariableInt(&state[i].variables, "startup", "random_seed",
 								random_seed))
 				exit(1);
+	}
+
+	/*
+	 * If SNB reservoirs ("persons", "messages") are registered by --config or
+	 * --reservoir and are still empty at benchmark start (e.g. when running a
+	 * benchmark without --load-dataset), auto-seed them from the database.
+	 */
+	if (findReservoir("persons") != NULL && reservoirCount("persons") == 0)
+	{
+		PgBenchResult *rres = active_driver->exec_sync(con,
+			"SELECT id FROM pgbench_graph_persons ORDER BY id LIMIT 10000");
+
+		if (rres != NULL && active_driver->result_status(rres) == PGBENCH_RES_TUPLES_OK)
+		{
+			int			nrows = active_driver->ntuples(rres);
+
+			for (int r = 0; r < nrows; r++)
+			{
+				const char *v = active_driver->get_value(rres, r, 0);
+
+				if (v != NULL && *v != '\0')
+					reservoirPush("persons", strtoll(v, NULL, 10));
+			}
+		}
+		if (rres != NULL)
+			active_driver->clear_result(rres);
+	}
+	if (findReservoir("messages") != NULL && reservoirCount("messages") == 0)
+	{
+		PgBenchResult *rres = active_driver->exec_sync(con,
+			"SELECT id FROM pgbench_graph_messages ORDER BY id LIMIT 20000");
+
+		if (rres != NULL && active_driver->result_status(rres) == PGBENCH_RES_TUPLES_OK)
+		{
+			int			nrows = active_driver->ntuples(rres);
+
+			for (int r = 0; r < nrows; r++)
+			{
+				const char *v = active_driver->get_value(rres, r, 0);
+
+				if (v != NULL && *v != '\0')
+					reservoirPush("messages", strtoll(v, NULL, 10));
+			}
+		}
+		if (rres != NULL)
+			active_driver->clear_result(rres);
 	}
 
 	if (!is_no_vacuum)

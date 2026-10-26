@@ -1,3 +1,13 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark inspired
+ * by the filtered vector search methodologies described in "VecBench: A
+ * Controllable Benchmark for Filtered Vector Search" (Zhang et al., ACM SIGMOD).
+ * It is not the official VecBench software suite and does not publish official
+ * VecBench leaderboard ratings.
+ */
+
 --
 -- pgbench-vec: Mode 3 Post-Filtered Vector Search with Oversampling
 --
@@ -7,7 +17,7 @@
 
 \set dim 8
 \set k 5
-\set k_oversample 60 * :scale
+\set k_oversample 60
 \set cat random(0, 9)
 \set qvec clustered_vector(:dim, 10, 0.35, 42, :cat)
 

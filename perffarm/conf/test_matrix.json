@@ -31,9 +31,24 @@
       "required_extensions": [],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 2,   "clients": 4,  "threads": 2, "duration_sec": 5 },
-        "standard": { "scale": 25,  "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 100, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 5
+        },
+        "standard": {
+          "scale": 25,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 100,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
@@ -45,9 +60,24 @@
       "required_extensions": [],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 2,   "clients": 4,  "threads": 2, "duration_sec": 5 },
-        "standard": { "scale": 25,  "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 100, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 5
+        },
+        "standard": {
+          "scale": 25,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 100,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
@@ -59,79 +89,179 @@
       "required_extensions": [],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 2,   "clients": 4,  "threads": 2, "duration_sec": 5 },
-        "standard": { "scale": 25,  "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 100, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 5
+        },
+        "standard": {
+          "scale": 25,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 100,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-b",
-      "suite": "pgbench-b",
+      "name": "pgbench-banking",
+      "suite": "pgbench-banking",
       "category": "oltp",
       "enabled": true,
-      "config_path": "workloads/pgbench-b/pgbench_b.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-banking/pgbench_banking.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1,  "clients": 4,  "threads": 2, "duration_sec": 5 },
-        "standard": { "scale": 10, "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 50, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 1,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 5
+        },
+        "standard": {
+          "scale": 10,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 50,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-c",
-      "suite": "pgbench-c",
+      "name": "pgbench-order",
+      "suite": "pgbench-order",
       "category": "oltp",
       "enabled": true,
-      "config_path": "workloads/pgbench-c/pgbench_c.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-order/pgbench_order.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 2,  "clients": 4,  "threads": 2, "duration_sec": 6 },
-        "standard": { "scale": 10, "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 25, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 10,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 25,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-e",
-      "suite": "pgbench-e",
+      "name": "pgbench-brokerage",
+      "suite": "pgbench-brokerage",
       "category": "oltp",
       "enabled": true,
-      "config_path": "workloads/pgbench-e/pgbench_e.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-brokerage/pgbench_brokerage.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 4,  "threads": 2, "duration_sec": 6 },
-        "standard": { "scale": 4, "clients": 16, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 8, "clients": 32, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 1,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 4,
+          "clients": 16,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 8,
+          "clients": 32,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-h",
-      "suite": "pgbench-h",
+      "name": "pgbench-analytics",
+      "suite": "pgbench-analytics",
       "category": "olap",
       "enabled": true,
-      "config_path": "workloads/pgbench-h/pgbench_h.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-analytics/pgbench_analytics.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1,  "clients": 3, "threads": 3, "duration_sec": 6 },
-        "standard": { "scale": 4,  "clients": 5, "threads": 5, "duration_sec": 60 },
-        "nightly":  { "scale": 10, "clients": 9, "threads": 9, "duration_sec": 300 }
+        "smoke": {
+          "scale": 1,
+          "clients": 3,
+          "threads": 3,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 4,
+          "clients": 5,
+          "threads": 5,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 10,
+          "clients": 9,
+          "threads": 9,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-ds",
-      "suite": "pgbench-ds",
+      "name": "pgbench-retail",
+      "suite": "pgbench-retail",
       "category": "olap",
       "enabled": true,
-      "config_path": "workloads/pgbench-ds/pgbench_ds.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-retail/pgbench_retail.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1,  "clients": 3, "threads": 3, "duration_sec": 6 },
-        "standard": { "scale": 4,  "clients": 5, "threads": 5, "duration_sec": 60 },
-        "nightly":  { "scale": 10, "clients": 9, "threads": 9, "duration_sec": 300 }
+        "smoke": {
+          "scale": 1,
+          "clients": 3,
+          "threads": 3,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 4,
+          "clients": 5,
+          "threads": 5,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 10,
+          "clients": 9,
+          "threads": 9,
+          "duration_sec": 300
+        }
       }
     },
     {
@@ -140,247 +270,519 @@
       "category": "htap",
       "enabled": true,
       "config_path": "workloads/pgbench-htap/pgbench_htap.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 2,  "clients": 6,  "threads": 4, "duration_sec": 6 },
-        "standard": { "scale": 4,  "clients": 10, "threads": 6, "duration_sec": 60 },
-        "nightly":  { "scale": 16, "clients": 20, "threads": 8, "duration_sec": 300 }
+        "smoke": {
+          "scale": 2,
+          "clients": 6,
+          "threads": 4,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 4,
+          "clients": 10,
+          "threads": 6,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 16,
+          "clients": 20,
+          "threads": 8,
+          "duration_sec": 300
+        }
       }
     },
     {
-      "name": "pgbench-graph-lsqb",
+      "name": "pgbench-graph-subgraph",
       "suite": "pgbench-graph",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql",
-      "config_path": "workloads/pgbench-graph/lsqb.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph/subgraph.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-snb-interactive",
+      "name": "pgbench-graph-social-interactive",
       "suite": "pgbench-graph",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql",
-      "config_path": "workloads/pgbench-graph/snb_interactive.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph/social_interactive.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 4, "threads": 2, "duration_sec": 6 },
-        "standard": { "scale": 2, "clients": 6, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 12, "threads": 6, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 6,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 12,
+          "threads": 6,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-snb-bi",
+      "name": "pgbench-graph-social-bi",
       "suite": "pgbench-graph",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql",
-      "config_path": "workloads/pgbench-graph/snb_bi.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph/social_bi.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 1 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "transactions": 3 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "transactions": 5 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 1
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "transactions": 3
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "transactions": 5
+        }
       }
     },
     {
-      "name": "pgbench-graph-finbench",
+      "name": "pgbench-graph-financial",
       "suite": "pgbench-graph",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql",
-      "config_path": "workloads/pgbench-graph/finbench.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph/financial.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-graphalytics",
+      "name": "pgbench-graph-algorithms",
       "suite": "pgbench-graph",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql",
-      "config_path": "workloads/pgbench-graph/graphalytics.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph/algorithms.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-sql-ud-lsqb",
+      "name": "pgbench-graph-sql-ud-subgraph",
       "suite": "pgbench-graph-sql-ud",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql_ud",
-      "config_path": "workloads/pgbench-graph-sql-ud/lsqb.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-sql-ud/subgraph.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "WITH RECURSIVE r(id, w) AS (SELECT 1, 10 UNION DISTINCT ON (id ORDER BY w ASC) SELECT 1, 20 FROM r WHERE false) SELECT count(*) FROM r;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-sql-ud-snb-interactive",
+      "name": "pgbench-graph-sql-ud-social-interactive",
       "suite": "pgbench-graph-sql-ud",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql_ud",
-      "config_path": "workloads/pgbench-graph-sql-ud/snb_interactive.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-sql-ud/social_interactive.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "WITH RECURSIVE r(id, w) AS (SELECT 1, 10 UNION DISTINCT ON (id ORDER BY w ASC) SELECT 1, 20 FROM r WHERE false) SELECT count(*) FROM r;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 4, "threads": 2, "duration_sec": 6 },
-        "standard": { "scale": 2, "clients": 6, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 12, "threads": 6, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 6,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 12,
+          "threads": 6,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-sql-ud-snb-bi",
+      "name": "pgbench-graph-sql-ud-social-bi",
       "suite": "pgbench-graph-sql-ud",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql_ud",
-      "config_path": "workloads/pgbench-graph-sql-ud/snb_bi.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-sql-ud/social_bi.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "WITH RECURSIVE r(id, w) AS (SELECT 1, 10 UNION DISTINCT ON (id ORDER BY w ASC) SELECT 1, 20 FROM r WHERE false) SELECT count(*) FROM r;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 1 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "transactions": 3 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "transactions": 5 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 1
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "transactions": 3
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "transactions": 5
+        }
       }
     },
     {
-      "name": "pgbench-graph-sql-ud-finbench",
+      "name": "pgbench-graph-sql-ud-financial",
       "suite": "pgbench-graph-sql-ud",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql_ud",
-      "config_path": "workloads/pgbench-graph-sql-ud/finbench.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-sql-ud/financial.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "WITH RECURSIVE r(id, w) AS (SELECT 1, 10 UNION DISTINCT ON (id ORDER BY w ASC) SELECT 1, 20 FROM r WHERE false) SELECT count(*) FROM r;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-sql-ud-graphalytics",
+      "name": "pgbench-graph-sql-ud-algorithms",
       "suite": "pgbench-graph-sql-ud",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_sql_ud",
-      "config_path": "workloads/pgbench-graph-sql-ud/graphalytics.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-sql-ud/algorithms.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "WITH RECURSIVE r(id, w) AS (SELECT 1, 10 UNION DISTINCT ON (id ORDER BY w ASC) SELECT 1, 20 FROM r WHERE false) SELECT count(*) FROM r;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-pgq-lsqb",
+      "name": "pgbench-graph-pgq-subgraph",
       "suite": "pgbench-graph-pgq",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_pgq",
-      "config_path": "workloads/pgbench-graph-pgq/lsqb.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-pgq/subgraph.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "BEGIN; CREATE TEMP TABLE _pf_v(id bigint PRIMARY KEY); CREATE PROPERTY GRAPH _pf_g VERTEX TABLES (_pf_v KEY (id)); ROLLBACK;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-pgq-snb-interactive",
+      "name": "pgbench-graph-pgq-social-interactive",
       "suite": "pgbench-graph-pgq",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_pgq",
-      "config_path": "workloads/pgbench-graph-pgq/snb_interactive.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-pgq/social_interactive.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "BEGIN; CREATE TEMP TABLE _pf_v(id bigint PRIMARY KEY); CREATE PROPERTY GRAPH _pf_g VERTEX TABLES (_pf_v KEY (id)); ROLLBACK;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 4, "threads": 2, "duration_sec": 6 },
-        "standard": { "scale": 2, "clients": 6, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 12, "threads": 6, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 6
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 6,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 12,
+          "threads": 6,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-pgq-snb-bi",
+      "name": "pgbench-graph-pgq-social-bi",
       "suite": "pgbench-graph-pgq",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_pgq",
-      "config_path": "workloads/pgbench-graph-pgq/snb_bi.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-pgq/social_bi.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "BEGIN; CREATE TEMP TABLE _pf_v(id bigint PRIMARY KEY); CREATE PROPERTY GRAPH _pf_g VERTEX TABLES (_pf_v KEY (id)); ROLLBACK;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 1 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "transactions": 3 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "transactions": 5 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 1
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "transactions": 3
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "transactions": 5
+        }
       }
     },
     {
-      "name": "pgbench-graph-pgq-finbench",
+      "name": "pgbench-graph-pgq-financial",
       "suite": "pgbench-graph-pgq",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_pgq",
-      "config_path": "workloads/pgbench-graph-pgq/finbench.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-pgq/financial.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "BEGIN; CREATE TEMP TABLE _pf_v(id bigint PRIMARY KEY); CREATE PROPERTY GRAPH _pf_g VERTEX TABLES (_pf_v KEY (id)); ROLLBACK;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
-      "name": "pgbench-graph-pgq-graphalytics",
+      "name": "pgbench-graph-pgq-algorithms",
       "suite": "pgbench-graph-pgq",
       "category": "graph",
       "enabled": true,
       "template_group": "graph_pgq",
-      "config_path": "workloads/pgbench-graph-pgq/graphalytics.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "config_path": "workloads/pgbench-graph-pgq/algorithms.pgbench.json",
+      "required_extensions": [
+        "pgbench"
+      ],
       "feature_probe_sql": "BEGIN; CREATE TEMP TABLE _pf_v(id bigint PRIMARY KEY); CREATE PROPERTY GRAPH _pf_g VERTEX TABLES (_pf_v KEY (id)); ROLLBACK;",
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 2 },
-        "standard": { "scale": 2, "clients": 4, "threads": 4, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 8, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 2
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 4,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 8,
+          "duration_sec": 180
+        }
       }
     },
     {
@@ -390,12 +792,29 @@
       "enabled": true,
       "template_group": "vec",
       "config_path": "workloads/pgbench-vec/vec_hybrid.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 15 },
-        "standard": { "scale": 2, "clients": 4, "threads": 2, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 4, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 15
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 4,
+          "duration_sec": 180
+        }
       }
     },
     {
@@ -405,12 +824,29 @@
       "enabled": true,
       "template_group": "vec",
       "config_path": "workloads/pgbench-vec/vec_aging.pgbench.json",
-      "required_extensions": ["pgbench"],
+      "required_extensions": [
+        "pgbench"
+      ],
       "guc_overrides": {},
       "profiles": {
-        "smoke":    { "scale": 1, "clients": 2, "threads": 2, "transactions": 10 },
-        "standard": { "scale": 2, "clients": 4, "threads": 2, "duration_sec": 60 },
-        "nightly":  { "scale": 5, "clients": 8, "threads": 4, "duration_sec": 180 }
+        "smoke": {
+          "scale": 1,
+          "clients": 2,
+          "threads": 2,
+          "transactions": 10
+        },
+        "standard": {
+          "scale": 2,
+          "clients": 4,
+          "threads": 2,
+          "duration_sec": 60
+        },
+        "nightly": {
+          "scale": 5,
+          "clients": 8,
+          "threads": 4,
+          "duration_sec": 180
+        }
       }
     }
   ]

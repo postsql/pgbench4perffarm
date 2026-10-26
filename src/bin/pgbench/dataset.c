@@ -103,6 +103,9 @@ freeAllDatasets(void)
 		}
 		pg_free(ds->row_offsets);
 		ds->row_offsets = NULL;
+		pg_free(ds->col_types);
+		ds->col_types = NULL;
+		ds->num_col_types = 0;
 		pg_free(ds->name);
 		ds->name = NULL;
 		pg_free(ds->filepath);
@@ -125,6 +128,23 @@ freeAllDatasets(void)
 		reservoirs[i].slots = NULL;
 	}
 	num_reservoirs = 0;
+}
+
+void
+setDatasetColumnTypes(PgBenchDataset *ds, int ncols,
+					  const PgBenchColLogicalType *types)
+{
+	if (ds == NULL)
+		return;
+	pg_free(ds->col_types);
+	ds->col_types = NULL;
+	ds->num_col_types = 0;
+	if (ncols > 0 && types != NULL)
+	{
+		ds->col_types = pg_malloc_array(PgBenchColLogicalType, ncols);
+		memcpy(ds->col_types, types, sizeof(PgBenchColLogicalType) * ncols);
+		ds->num_col_types = ncols;
+	}
 }
 
 /*
@@ -234,7 +254,7 @@ indexDelimitedDataset(PgBenchDataset *ds)
 		int			cols = 1;
 		bool		in_quotes = false;
 
-		/* Auto-detect pipe delimiter for LDBC-style CSV files without commas */
+		/* Auto-detect pipe delimiter for pipe-delimited graph CSV files without commas */
 		if (ds->format == DATASET_CSV)
 		{
 			bool		has_comma = false;
@@ -635,8 +655,8 @@ parseDatasetSpec(const char *spec)
 
 	/*
 	 * Also support trailing ":header" and/or ":<format>" suffixes after
-	 * <path>, e.g. "--dataset=ldbc_p:/path/to/file.csv:pipe:header" or
-	 * "--dataset=ldbc_p:/path/to/file.csv:header".
+	 * <path>, e.g. "--dataset=graph_p:/path/to/file.csv:pipe:header" or
+	 * "--dataset=graph_p:/path/to/file.csv:header".
 	 */
 	{
 		char	   *fp_copy = pg_strdup(filepath);
@@ -931,7 +951,8 @@ registerCopyDatasetSpec(const char *spec)
  * Parse a scalar token from a CSV/TSV cell into a PgBenchValue.
  */
 static void
-parseDelimitedCellValue(const char *token, bool was_quoted, PgBenchValue *val)
+parseDelimitedCellValue(const char *token, bool was_quoted,
+						PgBenchColLogicalType col_type, PgBenchValue *val)
 {
 	size_t		len = strlen(token);
 	int64		ival;
@@ -942,6 +963,39 @@ parseDelimitedCellValue(const char *token, bool was_quoted, PgBenchValue *val)
 	{
 		setNullValue(val);
 		return;
+	}
+
+	if (col_type != PGBENCH_COL_UNKNOWN)
+	{
+		switch (col_type)
+		{
+			case PGBENCH_COL_INT64:
+				if (strtoint64(token, true, &ival))
+					setIntValue(val, ival);
+				else
+					setTextValue(val, token);
+				return;
+			case PGBENCH_COL_FLOAT64:
+				if (strtodouble(token, true, &dval))
+					setDoubleValue(val, dval);
+				else
+					setTextValue(val, token);
+				return;
+			case PGBENCH_COL_BOOL:
+				if (pg_strcasecmp(token, "true") == 0 ||
+					pg_strcasecmp(token, "t") == 0 ||
+					strcmp(token, "1") == 0)
+					setBoolValue(val, true);
+				else
+					setBoolValue(val, false);
+				return;
+			case PGBENCH_COL_NUMERIC:
+			case PGBENCH_COL_STRING:
+			case PGBENCH_COL_TIMESTAMP:
+			default:
+				setTextValue(val, token);
+				return;
+		}
 	}
 
 	if (len >= 3 && token[0] == '[' && token[len - 1] == ']' &&
@@ -1026,6 +1080,8 @@ parseDelimitedRow(PgBenchDataset *ds, int64 row_idx, int target_col,
 		PQExpBufferData cell;
 		bool		was_quoted = false;
 		PgBenchValue cell_val;
+		PgBenchColLogicalType ctype = (ds->col_types != NULL && ncols < ds->num_col_types) ?
+			ds->col_types[ncols] : PGBENCH_COL_UNKNOWN;
 
 		initPQExpBuffer(&cell);
 
@@ -1069,7 +1125,7 @@ parseDelimitedRow(PgBenchDataset *ds, int64 row_idx, int target_col,
 		{
 			if (ncols == target_col)
 			{
-				parseDelimitedCellValue(cell.data, was_quoted, retval);
+				parseDelimitedCellValue(cell.data, was_quoted, ctype, retval);
 				termPQExpBuffer(&cell);
 				return true;
 			}
@@ -1078,7 +1134,7 @@ parseDelimitedRow(PgBenchDataset *ds, int64 row_idx, int target_col,
 		}
 		else
 		{
-			parseDelimitedCellValue(cell.data, was_quoted, &cell_val);
+			parseDelimitedCellValue(cell.data, was_quoted, ctype, &cell_val);
 			termPQExpBuffer(&cell);
 
 			if (ncols >= cap)
@@ -1821,7 +1877,6 @@ copyDatasetSlice(PgBenchConn *con, PgBenchDataset *ds, const char *table_spec,
 	else if (ds->format == DATASET_CSV && active_driver->caps.supports_typed_copy)
 	{
 		int			row_cols = (ncols > 0) ? ncols : (ds->dim > 0 ? ds->dim : 1);
-		PgBenchValue *vals;
 
 		stream = active_driver->copy_begin(con, table_name, ncols,
 										   (const char *const *) col_names,
@@ -1835,29 +1890,40 @@ copyDatasetSlice(PgBenchConn *con, PgBenchDataset *ds, const char *table_spec,
 			return false;
 		}
 
-		vals = pg_malloc0_array(PgBenchValue, row_cols);
 		for (int64 r = start_row; r < end_row; r++)
 		{
+			PgBenchValue row_val;
 			bool		row_ok = true;
 
-			for (int c = 0; c < row_cols; c++)
+			if (!datasetGetRow(ds, r, -1, &row_val))
 			{
-				if (!datasetGetRow(ds, r, c, &vals[c]))
-					setNullValue(&vals[c]);
+				pg_log_error("datasetGetRow failed for dataset \"%s\" row " INT64_FORMAT,
+							 ds->name, r);
+				(void) active_driver->copy_end(stream, "datasetGetRow error");
+				return false;
 			}
-			row_ok = active_driver->copy_put_row(stream, row_cols, vals);
-			for (int c = 0; c < row_cols; c++)
-				freeValue(&vals[c]);
+
+			if (row_val.type == PGBT_ARRAY)
+			{
+				int			nc = (row_val.u.aval.nelems < row_cols) ?
+					row_val.u.aval.nelems : row_cols;
+
+				row_ok = active_driver->copy_put_row(stream, nc, row_val.u.aval.elems);
+			}
+			else
+			{
+				row_ok = active_driver->copy_put_row(stream, 1, &row_val);
+			}
+			freeValue(&row_val);
+
 			if (!row_ok)
 			{
-				pg_free(vals);
 				pg_log_error("copy_put_row failed for dataset \"%s\": %s",
 							 ds->name, active_driver->error_message(con));
 				(void) active_driver->copy_end(stream, "copy_put_row error");
 				return false;
 			}
 		}
-		pg_free(vals);
 	}
 	else
 	{

@@ -1,5 +1,17 @@
+/*
+ * Copyright (c) 2026, PostgreSQL Global Development Group
+ *
+ * DISCLAIMER: This workload is an independent engineering benchmark designed
+ * for database performance research and regression testing. While modeled
+ * after graph traversal patterns published by the Graph Data Council (LDBC),
+ * this is NOT an LDBC Benchmark, is NOT an implementation of an LDBC Benchmark,
+ * and these results are NOT LDBC Benchmark Results.
+ * LDBC, LDBC Benchmark, and LDBC Benchmark Results are registered trademarks
+ * of the Graph Data Council. Distributed under CC-BY 4.0 attribution terms.
+ */
+
 --
--- pgbench-graph (Unified LDBC Social Network & FinBench Graph Workload Suite)
+-- pgbench-graph (Unified Social Network & Financial Graph Workload Suite)
 -- Schema DDL and Stored Procedures
 --
 
@@ -36,7 +48,7 @@ CREATE SEQUENCE pgbench_graph_msg_seq START WITH 100000;
 CREATE SEQUENCE pgbench_fin_transfer_seq START WITH 100000;
 CREATE SEQUENCE pgbench_fin_loan_seq START WITH 100000;
 
--- 1. LDBC SNB Static / Dictionary Entities
+-- 1. Social Graph Static / Dictionary Entities
 CREATE TABLE pgbench_graph_places (
     id bigint NOT NULL,
     name text NOT NULL,
@@ -50,7 +62,7 @@ CREATE TABLE pgbench_graph_tags (
     tagclass_id integer NOT NULL
 );
 
--- 2. LDBC SNB Dynamic Entities & Edges
+-- 2. Social Graph Dynamic Entities & Edges
 CREATE TABLE pgbench_graph_persons (
     id bigint NOT NULL DEFAULT nextval('pgbench_graph_person_seq'),
     first_name text NOT NULL,
@@ -109,7 +121,7 @@ CREATE TABLE pgbench_graph_message_tags (
     tag_id bigint NOT NULL
 );
 
--- 3. LDBC FinBench Financial Graph Entities & Multi-Edges
+-- 3. Financial Graph Entities & Multi-Edges
 CREATE TABLE pgbench_fin_accounts (
     id bigint NOT NULL,
     owner_id bigint NOT NULL,

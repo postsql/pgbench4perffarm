@@ -244,6 +244,26 @@ def do_snapshot(args: argparse.Namespace) -> int:
         args.dbname,
         "SELECT row_to_json(w) FROM pg_stat_wal w;",
     ) or {}
+    if not stat_wal:
+        wal_lsn_bytes = run_psql_json(
+            args.psql_bin,
+            args.host,
+            args.port,
+            args.user,
+            args.dbname,
+            "SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), '0/0')::bigint;",
+        )
+        if wal_lsn_bytes is None:
+            wal_lsn_bytes = run_psql_json(
+                args.psql_bin,
+                args.host,
+                args.port,
+                args.user,
+                args.dbname,
+                "SELECT pg_xlog_location_diff(pg_current_xlog_location(), '0/0')::bigint;",
+            )
+        if wal_lsn_bytes is not None:
+            stat_wal = {"wal_bytes": int(wal_lsn_bytes)}
 
     stat_io = []
     if int(ver_num) >= 160000:
@@ -292,7 +312,24 @@ def do_snapshot(args: argparse.Namespace) -> int:
                 "  WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) "
                 "  ORDER BY total_exec_time DESC LIMIT 20"
                 ") s;",
-            ) or []
+            )
+            if stat_stmts is None:
+                stat_stmts = run_psql_json(
+                    args.psql_bin,
+                    args.host,
+                    args.port,
+                    args.user,
+                    args.dbname,
+                    "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) FROM ("
+                    "  SELECT left(query, 240) AS query, calls, rows, "
+                    "         round(total_time::numeric, 3) AS total_exec_time_ms, "
+                    "         round(mean_time::numeric, 3) AS mean_exec_time_ms, "
+                    "         shared_blks_hit, shared_blks_read, shared_blks_dirtied, shared_blks_written "
+                    "  FROM pg_stat_statements "
+                    "  WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                    "  ORDER BY total_time DESC LIMIT 20"
+                    ") s;",
+                ) or []
 
     settings = {}
     if args.phase == "post":

@@ -2357,7 +2357,7 @@ evalStandardFunc(CState *st,
 				goto cleanup;
 			}
 
-		case PGBENCH_LDBC_CORRELATED_EDGE:
+		case PGBENCH_COMMUNITY_CORRELATED_EDGE:
 			{
 				int64		src_id = 0;
 				int64		num_vertices = 0;
@@ -2375,7 +2375,7 @@ evalStandardFunc(CState *st,
 				if (nargs == 5 && !coerceToInt(&vargs[4], &seed))
 					goto cleanup;
 
-				if (!pgbench_ldbc_correlated_edge(&st->cs_func_rs,
+				if (!pgbench_community_correlated_edge(&st->cs_func_rs,
 												  src_id,
 												  num_vertices,
 												  num_communities,
@@ -2383,7 +2383,7 @@ evalStandardFunc(CState *st,
 												  seed,
 												  &dst))
 				{
-					pg_log_error("ldbc_correlated_edge: invalid parameters (num_vertices=" INT64_FORMAT ", num_communities=" INT64_FORMAT ", homophily_prob=%g)",
+					pg_log_error("community_correlated_edge: invalid parameters (num_vertices=" INT64_FORMAT ", num_communities=" INT64_FORMAT ", homophily_prob=%g)",
 								 num_vertices, num_communities, homophily_prob);
 					goto cleanup;
 				}
@@ -2392,7 +2392,7 @@ evalStandardFunc(CState *st,
 				goto cleanup;
 			}
 
-		case PGBENCH_LDBC_FLASHMOB_TS:
+		case PGBENCH_BURST_TIMESTAMP:
 			{
 				int64		base_ts_us = 0;
 				int64		span_us = 0;
@@ -2410,7 +2410,7 @@ evalStandardFunc(CState *st,
 				if (nargs == 5 && !coerceToInt(&vargs[4], &seed))
 					goto cleanup;
 
-				if (!pgbench_ldbc_flashmob_ts(&st->cs_func_rs,
+				if (!pgbench_burst_timestamp(&st->cs_func_rs,
 											  base_ts_us,
 											  span_us,
 											  num_spikes,
@@ -2418,7 +2418,7 @@ evalStandardFunc(CState *st,
 											  seed,
 											  &ts))
 				{
-					pg_log_error("ldbc_flashmob_ts: invalid parameters (span_us=" INT64_FORMAT ", num_spikes=" INT64_FORMAT ", spike_prob=%g)",
+					pg_log_error("burst_timestamp: invalid parameters (span_us=" INT64_FORMAT ", num_spikes=" INT64_FORMAT ", spike_prob=%g)",
 								 span_us, num_spikes, spike_prob);
 					goto cleanup;
 				}
@@ -2912,6 +2912,90 @@ free_command(Command *command)
 	 * as only gset commands (which do not have an expression) are freed.
 	 */
 	pg_free(command);
+}
+
+static bool
+is_coalesceable_spanner_ddl_cmd(const Command *cmd)
+{
+	const char *p;
+
+	if (cmd == NULL || cmd->type != SQL_COMMAND || cmd->meta != META_NONE ||
+		cmd->varprefix != NULL || cmd->meta_varprefix != NULL ||
+		cmd->lines.data == NULL)
+		return false;
+
+	if (strchr(cmd->lines.data, ':') != NULL)
+		return false;
+
+	p = cmd->lines.data;
+	while (*p != '\0')
+	{
+		while (*p != '\0' && isspace((unsigned char) *p))
+			p++;
+		if (p[0] == '-' && p[1] == '-')
+		{
+			p += 2;
+			while (*p != '\0' && *p != '\n')
+				p++;
+			continue;
+		}
+		if (p[0] == '/' && p[1] == '*')
+		{
+			p += 2;
+			while (*p != '\0' && !(p[0] == '*' && p[1] == '/'))
+				p++;
+			if (*p != '\0')
+				p += 2;
+			continue;
+		}
+		break;
+	}
+
+	if ((pg_strncasecmp(p, "CREATE", 6) == 0 && isspace((unsigned char) p[6])) ||
+		(pg_strncasecmp(p, "DROP", 4) == 0 && isspace((unsigned char) p[4])) ||
+		(pg_strncasecmp(p, "ALTER", 5) == 0 && isspace((unsigned char) p[5])))
+		return true;
+
+	return false;
+}
+
+void
+coalesce_spanner_ddl_commands(Command **commands)
+{
+	int			w = 0;
+
+	if (commands == NULL || active_driver != &spanner_driver)
+		return;
+
+	/* Do not shift command indices if script contains control-flow jumps */
+	for (int i = 0; commands[i] != NULL; i++)
+	{
+		if (commands[i]->type == META_COMMAND &&
+			(commands[i]->meta == META_IF || commands[i]->meta == META_ELIF ||
+			 commands[i]->meta == META_ELSE || commands[i]->meta == META_ENDIF ||
+			 commands[i]->meta == META_FOR || commands[i]->meta == META_ENDFOR ||
+			 commands[i]->meta == META_WHILE || commands[i]->meta == META_ENDWHILE ||
+			 commands[i]->meta == META_TRY || commands[i]->meta == META_CATCH ||
+			 commands[i]->meta == META_ENDTRY || commands[i]->meta == META_EXPECT_ERROR))
+			return;
+	}
+
+	for (int r = 0; commands[r] != NULL; r++)
+	{
+		if (w > 0 &&
+			is_coalesceable_spanner_ddl_cmd(commands[w - 1]) &&
+			is_coalesceable_spanner_ddl_cmd(commands[r]))
+		{
+			appendPQExpBuffer(&commands[w - 1]->lines, ";\n%s",
+							  commands[r]->lines.data);
+			free_command(commands[r]);
+		}
+		else
+		{
+			commands[w++] = commands[r];
+		}
+	}
+	commands[w] = NULL;
 }
 
 /*

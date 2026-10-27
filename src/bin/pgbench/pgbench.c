@@ -173,7 +173,8 @@ usage(void)
 		   "\nCommon options:\n"
 		   "  --debug                  print debugging output\n"
 		   "  -d, --dbname=DBNAME      database name or URI to connect to\n"
-		   "  --driver=NAME            database driver: postgres|spanner|quack (default: postgres)\n"
+		   "  --driver=NAME            database driver: postgres|spanner|quack|mysql|neo4j\n"
+		   "                           (default: postgres)\n"
 		   "  --dialect=NAME           SQL dialect for spanner driver: googlesql|postgresql\n"
 		   "  -h, --host=HOSTNAME      database server host or socket directory\n"
 		   "  -p, --port=PORT          database server port number\n"
@@ -943,6 +944,14 @@ main(int argc, char **argv)
 			else if (strncmp(argv[i], "spanner://", 10) == 0 ||
 					 strncmp(argv[i], "quack://", 8) == 0 ||
 					 strncmp(argv[i], "duckdb://", 9) == 0 ||
+					 strncmp(argv[i], "mysql://", 8) == 0 ||
+					 strncmp(argv[i], "mariadb://", 10) == 0 ||
+					 strncmp(argv[i], "neo4j://", 8) == 0 ||
+					 strncmp(argv[i], "neo4j+s://", 10) == 0 ||
+					 strncmp(argv[i], "neo4j+ssc://", 12) == 0 ||
+					 strncmp(argv[i], "bolt://", 7) == 0 ||
+					 strncmp(argv[i], "bolt+s://", 9) == 0 ||
+					 strncmp(argv[i], "bolt+ssc://", 11) == 0 ||
 					 strncmp(argv[i], "postgres://", 11) == 0 ||
 					 strncmp(argv[i], "postgresql://", 13) == 0)
 				detectDriverFromConnStr(argv[i]);

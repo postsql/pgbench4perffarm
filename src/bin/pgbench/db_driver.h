@@ -212,6 +212,8 @@ typedef struct PgBenchDbDriver
 extern const PgBenchDbDriver postgres_driver;
 extern PgBenchDbDriver spanner_driver;
 extern const PgBenchDbDriver quack_driver;
+extern const PgBenchDbDriver mysql_driver;
+extern const PgBenchDbDriver neo4j_driver;
 
 extern const PgBenchDbDriver *active_driver;
 extern bool driver_explicitly_set;

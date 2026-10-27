@@ -3331,9 +3331,15 @@ pgTypeToLogicalType(const char *typname)
 	if (strcmp(typname, "bool") == 0)
 		return "BOOL";
 	if (strcmp(typname, "timestamptz") == 0 ||
-		strcmp(typname, "timestamp") == 0 ||
-		strcmp(typname, "date") == 0)
+		strcmp(typname, "timestamp") == 0)
 		return "TIMESTAMP";
+	if (strcmp(typname, "date") == 0)
+		return "DATE";
+	if (strcmp(typname, "json") == 0 ||
+		strcmp(typname, "jsonb") == 0)
+		return "JSON";
+	if (strcmp(typname, "bytea") == 0)
+		return "BYTES";
 	return "STRING";
 }
 
@@ -3352,6 +3358,12 @@ logicalTypeFromString(const char *type_str)
 		return PGBENCH_COL_BOOL;
 	if (pg_strcasecmp(type_str, "TIMESTAMP") == 0)
 		return PGBENCH_COL_TIMESTAMP;
+	if (pg_strcasecmp(type_str, "DATE") == 0)
+		return PGBENCH_COL_DATE;
+	if (pg_strcasecmp(type_str, "JSON") == 0)
+		return PGBENCH_COL_JSON;
+	if (pg_strcasecmp(type_str, "BYTES") == 0)
+		return PGBENCH_COL_BYTES;
 	if (pg_strcasecmp(type_str, "STRING") == 0)
 		return PGBENCH_COL_STRING;
 	return PGBENCH_COL_UNKNOWN;
@@ -3443,14 +3455,17 @@ exportCanonicalDataset(const char *dir)
 					 "FROM pg_catalog.pg_class c "
 					 "JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace "
 					 "WHERE n.nspname = 'public' AND c.relkind = 'r' "
-					 "  AND c.relname LIKE 'pgbench_%' "
+					 "  AND c.relname NOT LIKE 'perffarm_%' "
+					 "  AND c.relname NOT LIKE 'pgbench_run%' "
+					 "  AND c.relname NOT LIKE 'pgbench_tx_log%' "
+					 "  AND c.relname NOT LIKE 'pgbench_agg_log%' "
 					 "ORDER BY c.oid ASC");
 	if (PQresultStatus(tbl_res) != PGRES_TUPLES_OK)
-		pg_fatal("could not query pgbench tables for export: %s", PQerrorMessage(pgcon));
+		pg_fatal("could not query tables for export: %s", PQerrorMessage(pgcon));
 
 	ntables = PQntuples(tbl_res);
 	if (ntables == 0)
-		pg_fatal("no public.pgbench_* tables found to export");
+		pg_fatal("no user tables found in schema public to export");
 
 	manifest_path = psprintf("%s/manifest.json", dir);
 	mfp = fopen(manifest_path, "w");
@@ -3644,7 +3659,9 @@ exportCanonicalDataset(const char *dir)
 			"SELECT sequencename, "
 			"GREATEST(COALESCE(last_value, start_value, 1), " INT64_FORMAT ")::text "
 			"FROM pg_catalog.pg_sequences "
-			"WHERE schemaname = 'public' AND sequencename LIKE 'pgbench_%%' "
+			"WHERE schemaname = 'public' "
+			"  AND sequencename NOT LIKE 'perffarm_%%' "
+			"  AND sequencename NOT LIKE 'pgbench_run%%' "
 			"ORDER BY sequencename ASC",
 			(int64) 1000000 * (scale > 0 ? scale : 1));
 
@@ -3837,9 +3854,16 @@ loadCanonicalDataset(const char *dir, bool load_tables)
 
 				if (f_tname != NULL && f_tname->val->type == CJSON_STRING)
 				{
-					char	   *del_sql = psprintf("DELETE FROM %s WHERE true",
-												   f_tname->val->scalar_str);
-					PgBenchResult *dres = active_driver->exec_sync(con, del_sql);
+					char	   *del_sql;
+					PgBenchResult *dres;
+
+					if (active_driver == &neo4j_driver)
+						del_sql = psprintf("MATCH (n:`%s`) DETACH DELETE n",
+										   f_tname->val->scalar_str);
+					else
+						del_sql = psprintf("DELETE FROM %s WHERE true",
+										   f_tname->val->scalar_str);
+					dres = active_driver->exec_sync(con, del_sql);
 
 					active_driver->clear_result(dres);
 					pg_free(del_sql);

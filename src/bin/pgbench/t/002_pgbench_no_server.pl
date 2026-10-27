@@ -968,4 +968,60 @@ pgbench(
 	[qr{^$}],
 	'pgbench accepts --driver=quack');
 
+pgbench(
+	'--driver=mysql --dump-config=-',
+	0,
+	[qr{"driver": "mysql"}],
+	[qr{^$}],
+	'pgbench accepts --driver=mysql');
+
+pgbench(
+	'-d mysql://root@127.0.0.1:3306/testdb --dump-config=-',
+	0,
+	[qr{"driver": "mysql"}],
+	[qr{^$}],
+	'pgbench auto-detects mysql driver from mysql:// URI');
+
+pgbench(
+	'-d mariadb://root@127.0.0.1:3306/testdb --dump-config=-',
+	0,
+	[qr{"driver": "mysql"}],
+	[qr{^$}],
+	'pgbench auto-detects mysql driver from mariadb:// URI');
+
+pgbench(
+	'--driver=neo4j --dump-config=-',
+	0,
+	[qr{"driver": "neo4j"}],
+	[qr{^$}],
+	'pgbench accepts --driver=neo4j');
+
+pgbench(
+	'-d neo4j://neo4j:secret@127.0.0.1:7474/neo4j --dump-config=-',
+	0,
+	[qr{"driver": "neo4j"}],
+	[qr{^$}],
+	'pgbench auto-detects neo4j driver from neo4j:// URI');
+
+pgbench(
+	'-d neo4j+s://neo4j:secret@127.0.0.1:7474/neo4j --dump-config=-',
+	0,
+	[qr{"driver": "neo4j"}],
+	[qr{^$}],
+	'pgbench auto-detects neo4j driver from neo4j+s:// URI');
+
+pgbench(
+	'-d bolt://neo4j:secret@127.0.0.1:7474/neo4j --dump-config=-',
+	0,
+	[qr{"driver": "neo4j"}],
+	[qr{^$}],
+	'pgbench auto-detects neo4j driver from bolt:// URI');
+
+pgbench(
+	'-d bolt+s://neo4j:secret@127.0.0.1:7474/neo4j --dump-config=-',
+	0,
+	[qr{"driver": "neo4j"}],
+	[qr{^$}],
+	'pgbench auto-detects neo4j driver from bolt+s:// URI');
+
 done_testing();

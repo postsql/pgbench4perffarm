@@ -17,6 +17,8 @@ OBJS = \
 	engine.o \
 	init.o \
 	logdb.o \
+	mysql_driver.o \
+	neo4j_driver.o \
 	poller.o \
 	postgres_driver.o \
 	quack_driver.o \

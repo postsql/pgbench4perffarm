@@ -989,9 +989,17 @@ parseDelimitedCellValue(const char *token, bool was_quoted,
 				else
 					setBoolValue(val, false);
 				return;
+			case PGBENCH_COL_BYTES:
+				if (len >= 2 && token[0] == '\\' && (token[1] == 'x' || token[1] == 'X') &&
+					parseByteaLiteral(token, val))
+					return;
+				setTextValue(val, token);
+				return;
 			case PGBENCH_COL_NUMERIC:
 			case PGBENCH_COL_STRING:
 			case PGBENCH_COL_TIMESTAMP:
+			case PGBENCH_COL_DATE:
+			case PGBENCH_COL_JSON:
 			default:
 				setTextValue(val, token);
 				return;

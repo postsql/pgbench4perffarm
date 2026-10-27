@@ -49,9 +49,19 @@ setActiveDriverByName(const char *driver_name)
 	{
 		active_driver = &quack_driver;
 	}
+	else if (pg_strcasecmp(driver_name, "mysql") == 0 ||
+			 pg_strcasecmp(driver_name, "mariadb") == 0)
+	{
+		active_driver = &mysql_driver;
+	}
+	else if (pg_strcasecmp(driver_name, "neo4j") == 0 ||
+			 pg_strcasecmp(driver_name, "bolt") == 0)
+	{
+		active_driver = &neo4j_driver;
+	}
 	else
 	{
-		pg_fatal("invalid database driver \"%s\" (expected \"postgres\", \"spanner\", or \"quack\")",
+		pg_fatal("invalid database driver \"%s\" (expected \"postgres\", \"spanner\", \"quack\", \"mysql\", or \"neo4j\")",
 				 driver_name);
 	}
 	driver_explicitly_set = true;
@@ -121,6 +131,22 @@ detectDriverFromConnStr(const char *conn_str)
 		pg_strncasecmp(conn_str, "duckdb://", 9) == 0)
 	{
 		active_driver = &quack_driver;
+		return true;
+	}
+	if (pg_strncasecmp(conn_str, "mysql://", 8) == 0 ||
+		pg_strncasecmp(conn_str, "mariadb://", 10) == 0)
+	{
+		active_driver = &mysql_driver;
+		return true;
+	}
+	if (pg_strncasecmp(conn_str, "neo4j://", 8) == 0 ||
+		pg_strncasecmp(conn_str, "neo4j+s://", 10) == 0 ||
+		pg_strncasecmp(conn_str, "neo4j+ssc://", 12) == 0 ||
+		pg_strncasecmp(conn_str, "bolt://", 7) == 0 ||
+		pg_strncasecmp(conn_str, "bolt+s://", 9) == 0 ||
+		pg_strncasecmp(conn_str, "bolt+ssc://", 11) == 0)
+	{
+		active_driver = &neo4j_driver;
 		return true;
 	}
 	if (pg_strncasecmp(conn_str, "postgres://", 11) == 0 ||

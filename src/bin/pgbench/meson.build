@@ -8,6 +8,8 @@ pgbench_sources = files(
   'engine.c',
   'init.c',
   'logdb.c',
+  'mysql_driver.c',
+  'neo4j_driver.c',
   'poller.c',
   'postgres_driver.c',
   'quack_driver.c',

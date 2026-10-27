@@ -1,9 +1,10 @@
 # Top-level Makefile for pgbench4perffarm
-# Builds and installs both the contrib/pgbench server extension and
-# the src/bin/pgbench client benchmark driver against any supported
-# PostgreSQL installation (PostgreSQL 14 through 20devel).
+# Builds and installs both the contrib/pgbench and contrib/log2_hist server
+# extensions and the src/bin/pgbench client benchmark driver against any
+# supported PostgreSQL installation (PostgreSQL 14 through 20devel).
 
 PG_CONFIG ?= pg_config
+HAS_SUBSCRIPTING := $(shell test -d contrib/log2_hist && test -f "$$($(PG_CONFIG) --includedir-server 2>/dev/null)/nodes/subscripting.h" && echo yes || echo no)
 
 .PHONY: all extension client install uninstall clean distclean check tapcheck installcheck
 
@@ -11,27 +12,42 @@ all: extension client
 
 extension:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" all
+ifeq ($(HAS_SUBSCRIPTING),yes)
+	$(MAKE) -C contrib/log2_hist USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" all
+endif
 
 client:
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" all
 
 install: all
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" install
+ifeq ($(HAS_SUBSCRIPTING),yes)
+	$(MAKE) -C contrib/log2_hist USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" install
+endif
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" install
 
 uninstall:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" uninstall
+ifeq ($(HAS_SUBSCRIPTING),yes)
+	$(MAKE) -C contrib/log2_hist USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" uninstall
+endif
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" uninstall
 
 clean:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" clean
+ifeq ($(HAS_SUBSCRIPTING),yes)
+	$(MAKE) -C contrib/log2_hist USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" clean
+endif
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" clean
-	rm -rf contrib/pgbench/.deps src/bin/pgbench/.deps
+	rm -rf contrib/pgbench/.deps contrib/log2_hist/.deps src/bin/pgbench/.deps
 
 distclean: clean
 
 installcheck:
 	$(MAKE) -C contrib/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" installcheck
+ifeq ($(HAS_SUBSCRIPTING),yes)
+	$(MAKE) -C contrib/log2_hist USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" installcheck
+endif
 
 tapcheck:
 	$(MAKE) -C src/bin/pgbench USE_PGXS=1 PG_CONFIG="$(PG_CONFIG)" installcheck

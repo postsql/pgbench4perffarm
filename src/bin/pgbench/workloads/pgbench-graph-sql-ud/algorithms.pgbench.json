@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-sql-ud-algorithms",
-  "description": "LDBC Graphalytics algorithmic graph suite (BFS, WCC, SSSP, PageRank, LCC) using SQL with UNION DISTINCT ON",
+  "description": "Algorithmic graph suite (BFS, WCC, SSSP, PageRank, LCC) using SQL with UNION DISTINCT ON",
   "scale": 1,
   "no_vacuum": true,
   "clients": 2,

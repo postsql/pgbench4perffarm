@@ -61,7 +61,7 @@ Every client automatically initializes the following variables:
 
 -- Bounded integer loop (\for <var> <start_expr> .. <end_expr> [BY <step_expr>])
 \for d_id 1 .. 10 BY 1
-  CALL pgbench_c_delivery(:w_id, :d_id, :carrier_id);
+  CALL pgbench_order_delivery(:w_id, :d_id, :carrier_id);
 \endfor
 
 -- Condition-driven loop (\while <expr> ... \endwhile, up to MAX_LOOP_DEPTH)
@@ -77,7 +77,7 @@ In complex OLTP and financial graph workloads (such as the 1% invalid-item rollb
 
 ```sql
 \try
-  CALL pgbench_c_new_order(:w_id, :d_id, :c_id, :ol_cnt, :invalid_flag);
+  CALL pgbench_order_new_order(:w_id, :d_id, :c_id, :ol_cnt, :invalid_flag);
 \catch 'P0001'
   -- Executed only if SQLSTATE matches 'P0001' (omit 'SQLSTATE' to catch any SQL error)
   -- :sqlstate and :error_message are automatically populated

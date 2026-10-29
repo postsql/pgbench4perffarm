@@ -12,10 +12,10 @@
  */
 
 --
--- TPC-C Schema and Stored Procedures for pgbench
+-- pgbench-order Wholesale Order-Entry Schema and Stored Procedures for pgbench
 --
 -- Requires contrib/pgbench extension for in-database data generation and
--- TPC-C helper functions.
+-- order-entry helper functions.
 --
 
 SET client_min_messages = warning;
@@ -158,9 +158,9 @@ CREATE TABLE stock (
 );
 
 --
--- TPC-C 2.4: New-Order Transaction
+-- New-Order Transaction
 --
-CREATE OR REPLACE PROCEDURE pgbench_c_new_order(
+CREATE OR REPLACE PROCEDURE pgbench_order_new_order(
     p_w_id    integer,
     p_d_id    integer,
     p_c_id    integer,
@@ -265,9 +265,9 @@ END;
 $$;
 
 --
--- TPC-C 2.5: Payment Transaction
+-- Payment Transaction
 --
-CREATE OR REPLACE PROCEDURE pgbench_c_payment(
+CREATE OR REPLACE PROCEDURE pgbench_order_payment(
     p_w_id     integer,
     p_d_id     integer,
     p_c_w_id   integer,
@@ -346,9 +346,9 @@ END;
 $$;
 
 --
--- TPC-C 2.6: Order-Status Transaction
+-- Order-Status Transaction
 --
-CREATE OR REPLACE PROCEDURE pgbench_c_order_status(
+CREATE OR REPLACE PROCEDURE pgbench_order_order_status(
     p_w_id   integer,
     p_d_id   integer,
     p_c_id   integer,
@@ -409,9 +409,9 @@ END;
 $$;
 
 --
--- TPC-C 2.7: Delivery Transaction (single district step)
+-- Delivery Transaction (single district step)
 --
-CREATE OR REPLACE PROCEDURE pgbench_c_delivery(
+CREATE OR REPLACE PROCEDURE pgbench_order_delivery(
     p_w_id         integer,
     p_d_id         integer,
     p_o_carrier_id integer
@@ -455,9 +455,9 @@ END;
 $$;
 
 --
--- TPC-C 2.8: Stock-Level Transaction
+-- Stock-Level Transaction
 --
-CREATE OR REPLACE PROCEDURE pgbench_c_stock_level(
+CREATE OR REPLACE PROCEDURE pgbench_order_stock_level(
     p_w_id      integer,
     p_d_id      integer,
     p_threshold integer,

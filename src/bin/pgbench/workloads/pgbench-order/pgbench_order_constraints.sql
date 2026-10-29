@@ -12,7 +12,7 @@
  */
 
 --
--- TPC-C Post-Load Secondary Indexes, Foreign Keys, and ANALYZE
+-- pgbench-order Post-Load Secondary Indexes, Foreign Keys, and ANALYZE
 --
 
 CREATE INDEX IF NOT EXISTS idx_customer_name

@@ -1,0 +1,52 @@
+{
+  "suite": "pgbench-graph-neo4j-social-interactive",
+  "description": "Social Graph Interactive multi-group readers and writers using Neo4j Cypher",
+  "driver": "neo4j",
+  "dbname": "http://neo4j:benchpass@127.0.0.1:7474/neo4j",
+  "scale": 1000,
+  "clients": 6,
+  "threads": 4,
+  "duration_sec": 30,
+  "query_mode": "simple",
+  "no_vacuum": true,
+  "replay_speed": 0.1,
+  "reservoirs": {
+    "persons": 65536,
+    "messages": 65536
+  },
+  "groups": [
+    {
+      "name": "social_readers",
+      "clients": 4,
+      "threads": 2,
+      "scripts": [
+        {
+          "file": "pgbench_graph_neo4j_social_complex.sql",
+          "weight": 30
+        },
+        {
+          "file": "pgbench_graph_neo4j_social_short.sql",
+          "weight": 70
+        }
+      ]
+    },
+    {
+      "name": "social_writers",
+      "clients": 2,
+      "threads": 2,
+      "scripts": [
+        {
+          "file": "pgbench_graph_neo4j_social_insert.sql",
+          "weight": 75
+        },
+        {
+          "file": "pgbench_graph_neo4j_social_delete.sql",
+          "weight": 25
+        }
+      ]
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

@@ -203,35 +203,35 @@ The following table provides the exact correspondence between legacy or inspired
   - *Dimension Sector*: `address`, `status_type`, `taxrate`, `zip_code`.
 - **Ten Core Stored Procedure Transactions**:
   1. **Market-Watch (`pgbench_brokerage_market_watch.sql`, 18% weight)**:
-     - Procedure: `CALL pgbench_e_market_watch(p_wl_id, p_co_id_min, p_co_id_max, p_pct_change)`.
+     - Procedure: `CALL pgbench_brokerage_market_watch(p_wl_id, p_co_id_min, p_co_id_max, p_pct_change)`.
      - Read-only query calculating percentage price changes across securities in a customer's watch list or within a range of company identifiers in `daily_market` and `last_trade`.
   2. **Trade-Order (`pgbench_brokerage_trade_order.sql`, 10% weight)**:
-     - Procedure: `CALL pgbench_e_trade_order(p_ca_id, p_s_symb, p_tt_id, p_qty, p_is_lifo, p_roll_it_back, p_t_id)`.
+     - Procedure: `CALL pgbench_brokerage_trade_order(p_ca_id, p_s_symb, p_tt_id, p_qty, p_is_lifo, p_roll_it_back, p_t_id)`.
      - Validates account buying power, fetches last trade price, determines commission and charge rates, and inserts records into `trade` and `trade_history`. If limit order, inserts into `trade_request`.
      - Simulates client rollback: 1% of transactions set `p_roll_it_back = true` (`RAISE EXCEPTION 'Intentional Trade-Order Rollback...' USING ERRCODE = 'P0002'`), verified by `\try ... \catch` blocks.
   3. **Trade-Result (`pgbench_brokerage_trade_result.sql`, 10% weight)**:
-     - Procedure: `CALL pgbench_e_trade_result(p_t_id, p_trade_price)`.
+     - Procedure: `CALL pgbench_brokerage_trade_result(p_t_id, p_trade_price)`.
      - Core financial settlement transaction. Updates `trade` status to completed (`CMPT`), appends to `trade_history`, deletes pending requests from `trade_request`, adjusts `holding_summary` and `holding` positions, credits broker commissions in `broker`, calculates settlement cash amounts, and updates `customer_account` balances.
   4. **Customer-Position (`pgbench_brokerage_customer_position.sql`, 13% weight)**:
-     - Procedure: `CALL pgbench_e_customer_position(p_c_id, p_ca_id, p_get_history)`.
+     - Procedure: `CALL pgbench_brokerage_customer_position(p_c_id, p_get_history)`.
      - Read-only portfolio valuation calculating total asset equity across holdings evaluated at current market prices from `last_trade`, optionally retrieving recent trade execution history.
   5. **Broker-Volume (`pgbench_brokerage_broker_volume.sql`, 5% weight)**:
-     - Procedure: `CALL pgbench_e_broker_volume(p_b_id_min, p_b_id_max)`.
+     - Procedure: `CALL pgbench_brokerage_broker_volume(p_b_id_min, p_b_id_max)`.
      - Read-only aggregation calculating cumulative trade volumes and pending trade requests across a contiguous range of broker identifiers.
   6. **Trade-Status (`pgbench_brokerage_trade_status.sql`, 44% weight)**:
-     - Procedure: `CALL pgbench_e_trade_status(p_ca_id)`.
+     - Procedure: `CALL pgbench_brokerage_trade_status(p_ca_id)`.
      - Read-only query returning trade identifiers, status, quantities, prices, and security names for the 50 most recent trades on an account.
-  7. **Trade-Lookup (`tpce_trade_lookup`)**:
-     - Procedure: `CALL tpce_trade_lookup(p_ca_id, p_max_trades)`.
+  7. **Trade-Lookup (`pgbench_brokerage_trade_lookup`)**:
+     - Procedure: `CALL pgbench_brokerage_trade_lookup(p_ca_id, p_max_trades)`.
      - Historical trade audit query scanning the trade ledger by customer account ID or timestamp interval, verifying historical trade prices and execution timestamps.
-  8. **Trade-Update (`tpce_trade_update`)**:
-     - Procedure: `CALL tpce_trade_update(p_ca_id, p_max_updates)`.
+  8. **Trade-Update (`pgbench_brokerage_trade_update`)**:
+     - Procedure: `CALL pgbench_brokerage_trade_update(p_ca_id, p_max_updates)`.
      - Read-write audit correction transaction updating executor descriptions in `trade` for recent trades to model post-trade clearing adjustments.
-  9. **Security-Detail (`tpce_security_detail`)**:
-     - Procedure: `CALL tpce_security_detail(p_s_symb)`.
+  9. **Security-Detail (`pgbench_brokerage_security_detail`)**:
+     - Procedure: `CALL pgbench_brokerage_security_detail(p_s_symb)`.
      - Read-only financial prospectus inspection returning company name, CEO, S&P rating, outstanding shares, 52-week highs/lows, dividends, and last trade prices from `security`, `company`, and `last_trade`.
-  10. **Market-Feed (`tpce_market_feed`)**:
-      - Procedure: `CALL tpce_market_feed(p_s_symb, p_price, p_qty)`.
+  10. **Market-Feed (`pgbench_brokerage_market_feed`)**:
+      - Procedure: `CALL pgbench_brokerage_market_feed(p_s_symb, p_price, p_qty)`.
       - High-frequency market ticker transaction updating current price, trading volume, and timestamp in `last_trade`.
 - **Distribution Modeling**: Uses Zipfian distributions (`pgbench.random_zipfian`) to model heavy-tailed popularity in security trading volumes and customer net worth tiers.
 - **Primary Metric**: `tps` (Transactions Per Second).
@@ -258,9 +258,9 @@ The following table provides the exact correspondence between legacy or inspired
   - **Q14 (`pgbench_analytics_q14.sql`) Promotion Effect**: Computes the exact percentage of gross revenue generated by promotional catalog parts during a specified month, joining `lineitem` and `part`.
   - **Q19 (`pgbench_analytics_q19.sql`) Discounted Revenue**: Complex multi-clause `OR` predicate scanning multiple part and supplier quantity combinations with brand, container, and quantity restrictions. Tests optimizer ability to perform bitmap index scans or disjunctive filter pushdowns.
 - **Concurrent Refresh Streams (RF1 / RF2)**:
-  - `pgbench_analytics_refresh.sql` implements concurrent database maintenance:
-    - **RF1 (Insert Stream)**: Batches new orders and line items into `orders` and `lineitem`, updating sequence generators.
-    - **RF2 (Delete Stream)**: Purges oldest processed orders and corresponding line items from `orders` and `lineitem`.
+  - `pgbench_analytics_refresh.sql` implements concurrent database maintenance via stored procedures:
+    - **RF1 (Insert Stream)**: Batches new orders and line items into `orders` and `lineitem` via `CALL pgbench_analytics_rf1(p_base_okey, p_batch_size, p_scale)`.
+    - **RF2 (Delete Stream)**: Purges oldest processed orders and corresponding line items via `CALL pgbench_analytics_rf2(p_base_okey, p_batch_size)`.
   - Stresses PostgreSQL MVCC table bloat, autovacuum background cleanup, and B-tree index page split handling during active analytical scans.
 - **Multi-Group Execution Architecture**:
   - Evaluated using client groups (`--group`): analytical query streams execute sequentially (`sequential=true`) while background refresh streams run concurrently (`rate=2`), simulating real-world decision support alongside continuous ETL loading.
@@ -278,7 +278,7 @@ The following table provides the exact correspondence between legacy or inspired
   - **Cross-Channel Window Ranking (`pgbench_retail_q_cross_channel.sql`)**: Complex analytic window functions (`RANK() OVER (PARTITION BY ... ORDER BY ...)`) comparing quarterly sales growth across store, web, and catalog sales channels.
   - **Warehouse Inventory Variation (`pgbench_retail_q_inventory.sql`)**: Time-series rolling analysis tracking stock variances, mean weekly inventory, and stockout risks across distributed warehouses.
   - **Promotional Sales Ratio (`pgbench_retail_q_promotion.sql`)**: Evaluates promotional marketing lift by comparing promotional item revenues against unpromoted catalog items across specified promotional campaigns.
-  - **Concurrent Data Maintenance (`pgbench_retail_maintenance.sql`)**: Simulates continuous daily batch loading: appends new transaction batches into `store_sales` and `inventory` while executing rolling date partition purges.
+  - **Concurrent Data Maintenance (`pgbench_retail_maintenance.sql`)**: Simulates continuous daily batch loading via `CALL pgbench_retail_maintenance(p_base_ticket, p_batch_size, p_scale)`: appends new transaction batches into `store_sales` and `inventory` while executing rolling date partition purges.
 - **Primary Metric**: `qph@SF`.
 
 ### 3.6 `pgbench-htap` (Hybrid Transactional / Analytical Processing)

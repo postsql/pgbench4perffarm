@@ -156,7 +156,7 @@ SELECT count(*) AS bi11_triangles
 
 \validate_result (:bi11_triangles >= 0) true
 
--- BI-19: Interaction-Weighted Shortest Path Between Two Cities via UNION DISTINCT ON (start_id, curr_id ORDER BY total_weight ASC)
+-- BI-19: Interaction-Weighted Shortest Path Between Two Cities via UNION DISTINCT ON (curr_id ORDER BY total_weight ASC)
 WITH RECURSIVE city_paths AS (
     SELECT p.id AS start_id,
            p.id AS curr_id,
@@ -164,7 +164,7 @@ WITH RECURSIVE city_paths AS (
            0 AS hops
       FROM pgbench_graph_persons p
      WHERE p.city_id = :city1_id
-    UNION DISTINCT ON (start_id, curr_id ORDER BY total_weight ASC)
+    UNION DISTINCT ON (curr_id ORDER BY total_weight ASC)
     SELECT cp.start_id AS start_id,
            k.dst_id AS curr_id,
            cp.total_weight + k.weight AS total_weight,

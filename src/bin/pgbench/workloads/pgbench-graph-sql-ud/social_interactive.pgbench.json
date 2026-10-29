@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-sql-ud-social-interactive",
-  "description": "LDBC SNB Interactive v1/v2 multi-group readers and writers using SQL with UNION DISTINCT ON",
+  "description": "Social Network Interactive v1/v2 multi-group readers and writers using SQL with UNION DISTINCT ON",
   "scale": 1,
   "no_vacuum": true,
   "duration_sec": 60,

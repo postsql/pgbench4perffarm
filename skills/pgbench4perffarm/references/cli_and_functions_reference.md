@@ -36,7 +36,7 @@ This reference lists all `pgbench` command-line options (`pgbench.c`), `--sla` g
 
 | Field | Supported Values | Examples |
 | :--- | :--- | :--- |
-| `<target>` | `total` / `all` / `*` (default when omitted), `<group_name>`, `<script_name>` (or script basename without `.sql`) | `total:p95<=50ms`, `oltp:p99<=25ms`, `pgbench_c_new_order:p95<=40ms` |
+| `<target>` | `total` / `all` / `*` (default when omitted), `<group_name>`, `<script_name>` (or script basename without `.sql`) | `total:p95<=50ms`, `oltp:p99<=25ms`, `pgbench_order_new_order:p95<=40ms` |
 | `<named_metric>` | Any named recall stream recorded via `\record_recall [name=]<metric>` (or `schedule_lag` when combined with `:p<X>`) | `r_unfiltered:recall>=0.95`, `r_unfiltered:recall:p5>=0.80`, `schedule_lag:p99<=10ms` |
 | `<metric>` | `p<X>` (`p50`, `p90`, `p95`, `p99`, `p99.9`), `avg` / `latency_avg`, `schedule_lag:p<X>` / `schedule_lag_p<X>`, `ontime_pct`, `recall`, `recall_p<X>` / `recall:p<X>`, `tps` / `qps`, `error_rate`, `validation_failures`, `validation_pct` | `p95<=50ms`, `ontime_pct>=95%`, `recall>=0.90`, `tps>=500`, `error_rate<=0%`, `validation_failures<=0` |
 | `<op>` | `<=`, `>=` | `<=`, `>=` |

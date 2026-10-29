@@ -1,10 +1,17 @@
+<!--
+  INSPIRATION & TRADEMARK DISCLAIMER:
+  The pgbench-vec workload suite in this repository is a clean-room, non-comparable engineering
+  workload historically inspired by the academic VecBench methodology. That name is mentioned ONLY
+  in this opening header comment to acknowledge architectural inspiration; throughout all titles,
+  documentation, configurations, and scripts, always use the clean-room `pgbench-vec` name.
+-->
 # Vector Similarity Search & Index Aging Benchmark Guide (`pgbench-vec`)
 
-`workloads/pgbench-vec/` implements a comprehensive vector Approximate Nearest Neighbor (ANN), hybrid filtered Retrieval-Augmented Generation (RAG), multi-vector late-interaction, and continuous index aging benchmark suite inspired by the academic **VecBench** methodology.
+`workloads/pgbench-vec/` implements a comprehensive vector Approximate Nearest Neighbor (ANN), hybrid filtered Retrieval-Augmented Generation (RAG), multi-vector late-interaction, and continuous index aging benchmark suite (`pgbench-vec`).
 
 Unlike traditional database benchmarks that only measure throughput (TPS) and latency (ms), `pgbench-vec` treats **retrieval accuracy (`Recall@K` and `nDCG@K`)** and **index aging degradation (`initial Q1` vs. `mature Q4` recall)** as first-class telemetry metrics with enforceable `--sla` contracts.
 
-> **Disclaimer**: `pgbench-vec` is a **non-comparable, inspired-by engineering workload** for PostgreSQL testing and development. Results represent un-audited internal engineering measurements and do not constitute official VecBench leaderboard ratings.
+> **Disclaimer**: `pgbench-vec` is a **non-comparable, clean-room engineering workload** for PostgreSQL testing and development. Results represent un-audited internal engineering measurements and do not constitute official leaderboard ratings.
 
 ---
 
@@ -68,7 +75,7 @@ pgbench -n -t 1 -f workloads/pgbench-vec/pgbench_vec_gt_gen.sql bench_vec
 
 ## 3. The Six Operational Vector Benchmark Modes
 
-`pgbench-vec` provides two ready-to-run `.pgbench.json` suites that cover all **6 VecBench operational modes**:
+`pgbench-vec` provides two ready-to-run `.pgbench.json` suites that cover all **6 vector operational modes**:
 - **`vec_hybrid.pgbench.json`**: Runs Modes 1–5 concurrently as a weighted workload mix with 4 independent per-mode `Recall@K` SLAs.
 - **`vec_aging.pgbench.json`**: Runs Mode 6 (`pgbench_vec_aging.sql`) to measure continuous ingestion, centroid drift, delete/re-insert churn, and `Q1`-vs-`Q4` index recall degradation.
 

@@ -12,14 +12,14 @@
  */
 
 --
--- pgbench-c (TPC-C-inspired) Parallel In-Database Data Generation Script for pgbench
+-- pgbench-order Parallel In-Database Data Generation Script for pgbench
 --
 -- Usage:
---   pgbench -n -c <N> -j <N> -t 1 -D num_workers=<N> -s <scale> -f pgbench_c_init.sql
+--   pgbench -n -c <N> -j <N> -t 1 -D num_workers=<N> -s <scale> -f pgbench_order_init.sql
 --
 -- Optional density overrides (via -D):
---   items_per_scale (default: 1000; full TPC-C specification: 100000)
---   cust_per_dist   (default: 30;   full TPC-C specification: 3000)
+--   items_per_scale (default: 1000; full-scale density: 100000)
+--   cust_per_dist   (default: 30;   full-scale density: 3000)
 --
 
 SELECT

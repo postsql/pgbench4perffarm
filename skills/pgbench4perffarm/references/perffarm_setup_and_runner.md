@@ -204,9 +204,10 @@ ORDER BY batch_id DESC, run_seq_idx ASC;
 ### 5.4 Compare Any Two Git Commit SHAs Directly
 ```sql
 -- Returns: animal_name, test_name, suite_name, metric, unit, sha_a_val, sha_b_val, abs_delta, pct_change, verdict
-SELECT * FROM perffarm_compare_commits('2c10c2ce4d', 'dfd7ede529');
+SELECT * FROM perffarm_compare_commits('f197fdee82', '3c5d9d914f');
 
--- Scoped to a specific animal and test/suite
+-- Scoped to a specific animal and test/suite (e.g. Cloudtop animal dev02_dev_e4a or lynx-x86-nvme)
+SELECT * FROM perffarm_compare_commits('f197fdee82', '3c5d9d914f', 'dev02_dev_e4a', 'pgbench-c');
 SELECT * FROM perffarm_compare_commits('2c10c2ce4d', 'dfd7ede529', 'lynx-x86-nvme', 'pgbench-c');
 ```
 

@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-sql-ud-financial",
-  "description": "LDBC FinBench financial transaction graph workload using SQL with UNION DISTINCT ON",
+  "description": "Financial transaction graph workload using SQL with UNION DISTINCT ON",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

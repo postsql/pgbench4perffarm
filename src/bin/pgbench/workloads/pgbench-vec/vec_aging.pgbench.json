@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-vec-aging",
-  "description": "VecBench Mode 6 continuous vector ingestion, centroid drift, churn, and real-time Recall@K degradation telemetry (Q1 vs Q4)",
+  "description": "Mode 6 continuous vector ingestion, centroid drift, churn, and real-time Recall@K degradation telemetry (Q1 vs Q4)",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

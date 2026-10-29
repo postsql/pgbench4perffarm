@@ -1,8 +1,17 @@
+<!--
+  INSPIRATION & TRADEMARK DISCLAIMER:
+  The benchmark workloads in this repository are clean-room, non-comparable engineering workloads
+  historically inspired by industry benchmarks (such as TPC-B, TPC-C, TPC-E, TPC-H, TPC-DS,
+  CH-benCHmark, LDBC, and VecBench). Those names are mentioned ONLY in this opening header comment
+  to acknowledge architectural inspiration. Throughout all file names, titles, documentation,
+  configurations, and scripts, always use the clean-room `pgbench-*` workload names.
+-->
 # Agent-Oriented Guide: Main `pgbench` & `contrib/pgbench` Usage
 
-**Target Audience**: Autonomous AI coding/benchmarking agents, subagents, and engineers automating PostgreSQL performance testing with **`postsql/pgbench4perffarm`**.  
-**Companion Skill**: [`skills/pgbench4perffarm/SKILL.md`](../skills/pgbench4perffarm/SKILL.md)  
-**Perffarm Companion Guide**: [`doc/agent-guide-perffarm.md`](agent-guide-perffarm.md)
+**Target Audience**: Autonomous AI coding/benchmarking agents (**Jetski**, Google3 `DeepCoder` / `invoke_subagent` subagents, Gemini CLI, Claude Code, Cursor, Codex) and engineers automating PostgreSQL performance testing with **`postsql/pgbench4perffarm`** (`//third_party/pgext/pgbench4perffarm`).  
+**Companion Skill**: [`skills/pgbench4perffarm/SKILL.md`](../skills/pgbench4perffarm/SKILL.md) (`~/.gemini/config/skills/pgbench4perffarm/SKILL.md`)  
+**Perffarm Companion Guide**: [`doc/agent-guide-perffarm.md`](agent-guide-perffarm.md)  
+**Wholesale Order-Entry (`pgbench-order` / `pgbench-c`) Specification & Multi-Dialect / Non-SQL Porting Guide**: [`doc/agent-guide-pgbench-order.md`](agent-guide-pgbench-order.md)
 
 ---
 
@@ -40,12 +49,12 @@ Use this lookup table to map a user's natural-language testing goal directly to 
 | Testing Objective / Subsystem Under Test | Target Suite | `--config` Manifest(s) | Required Extensions | Default `-s` Scale | Key Telemetry Assertions (`--json-report`) |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **WAL write path, buffer lock contention, checkpoint tuning, stored-proc OLTP** | `pgbench-b` | `pgbench-b/pgbench_b.pgbench.json` | `pgbench` | `-s 10` (`1M` accounts) | `$.overall.tps`, `$.overall.latency_ms.p95` |
-| **Multi-table OLTP locking, B-tree split contention, skewed `nurand` access, `\try`/`\catch` 1% expected rollbacks** | `pgbench-c` | `pgbench-c/pgbench_c.pgbench.json` | `pgbench` | `-s 2` (`2` warehouses) | `$.overall.tps`, `$.overall.latency_ms.p95`, `$.overall.transactions_failed == 0` |
+| **Multi-table OLTP locking, B-tree split contention, skewed `nurand` access, `\try`/`\catch` 1% expected rollbacks** | `pgbench-c` | `pgbench-c/pgbench_order.pgbench.json` | `pgbench` | `-s 2` (`2` warehouses) | `$.overall.tps`, `$.overall.latency_ms.p95`, `$.overall.transactions_failed == 0` |
 | **Complex financial brokerage OLTP (16 tables, 10 stored procs, limit-order rollbacks)** | `pgbench-e` | `pgbench-e/pgbench_e.pgbench.json` | `pgbench` | `-s 1` (`1000` customers) | `$.overall.tps`, `$.overall.latency_ms.p95` |
 | **Parallel hash joins, sort/aggregation `work_mem` spills, vectorized scan throughput (`Q1`–`Q19` + throttled `RF1`/`RF2` refresh)** | `pgbench-h` | `pgbench-h/pgbench_h.pgbench.json` | `pgbench` | `-s 1` | `$.overall.tps`, `$.groups[*].latency_ms.p95` |
 | **Star-schema query optimizer join ordering (13 tables, CTEs, window functions + concurrent maintenance)** | `pgbench-ds` | `pgbench-ds/pgbench_ds.pgbench.json` | `pgbench` | `-s 1` | `$.groups[*].tps`, `$.groups[*].latency_ms.p95` |
 | **HTAP workload isolation (concurrent `oltp` writers + `olap` readers with independent SLAs)** | `pgbench-htap` | `pgbench-htap/pgbench_htap.pgbench.json` | `pgbench` | `-s 2` | `$.groups[?(@.name=='oltp')].latency_ms.p95`, `$.groups[?(@.name=='olap')].latency_ms.p95`, `$.sla_all_passed == true` |
-| **Variable-length graph traversal (`LSQB`, `SNB Interactive`, `SNB BI`, `FinBench`, `Graphalytics`) across `SQL`, `SQL_UD`, and ISO `SQL/PGQ`** | `pgbench-graph`<br>`pgbench-graph-sql-ud`<br>`pgbench-graph-pgq` | `lsqb.pgbench.json`<br>`snb_interactive.pgbench.json`<br>`snb_bi.pgbench.json`<br>`finbench.pgbench.json`<br>`graphalytics.pgbench.json` | `pgbench` | `-s 1` | `$.overall.validation_failed == 0`, `$.overall.latency_ms.p95` |
+| **Variable-length graph traversal (`LSQB`, `SNB Interactive`, `SNB BI`, `FinBench`, `Graphalytics`) across `SQL`, `SQL_UD`, ISO `SQL/PGQ`, and `plPGQ`** | `pgbench-graph`<br>`pgbench-graph-sql-ud`<br>`pgbench-graph-pgq`<br>`pgbench-graph-plpgq` | `lsqb.pgbench.json`<br>`snb_interactive.pgbench.json`<br>`snb_bi.pgbench.json`<br>`finbench.pgbench.json`<br>`graphalytics.pgbench.json` | `pgbench` *(+ `plv8`/`pljs` for `plpgq`)* | `-s 1` | `$.overall.validation_failed == 0`, `$.overall.latency_ms.p95` |
 | **Vector ANN & hybrid search (Modes 1–5) and continuous churn / Q1-vs-Q4 index aging degradation (Mode 6)** | `pgbench-vec` | `pgbench-vec/vec_hybrid.pgbench.json`<br>`pgbench-vec/vec_aging.pgbench.json` | `pgbench` *(+ optional `vector`)* | `-s 1` | `$.overall.recall.avg_recall >= 0.80`, `$.sla_all_passed == true` |
 
 ---
@@ -81,7 +90,7 @@ Violating any of the following rules causes `pgbench` to exit immediately with a
 
 | Rule ID | Forbidden Combination / Pattern | Why It Fails | Correct Agent Pattern |
 | :--- | :--- | :--- | :--- |
-| **`RULE-01`** | `pgbench -i -f pgbench_c_schema.sql` | `-f` sets `benchmarking_option_set = true`, which is rejected in `-i` mode (`pgbench: error: some of the specified options cannot be used in initialization (-i) mode`). | Either use `pgbench --config=pgbench_c.pgbench.json -i` (no `-f`) OR `pgbench -n -t 1 -f pgbench_c_schema.sql` (no `-i`). |
+| **`RULE-01`** | `pgbench -i -f pgbench_order_schema.sql` | `-f` sets `benchmarking_option_set = true`, which is rejected in `-i` mode (`pgbench: error: some of the specified options cannot be used in initialization (-i) mode`). | Either use `pgbench --config=pgbench_order.pgbench.json -i` (no `-f`) OR `pgbench -n -t 1 -f pgbench_order_schema.sql` (no `-i`). |
 | **`RULE-02`** | `pgbench --config=htap.pgbench.json -f extra.sql` or `pgbench --group="name=g1,..." --group="name=g2,..." -c 8` | Passing `-f`, `-b`, or `--group` after `--config` clears all scripts/groups loaded from `--config` (`clearConfigScriptsAndGroups()`). And when multiple `--group` flags are given on the CLI, top-level `-c`/`-j` are overwritten by the sum of each group's `clients`/`threads`. *(Note: `-c N -j M` **can** be combined with `--config` to proportionally scale configured groups.)* | Either use `--config=<file>.pgbench.json [-c N -j M]` to scale configured groups, OR declare `name=...,clients=N,threads=M,file=path@weight` inside each CLI `--group="..."` flag. |
 | **`RULE-03`** | `pgbench --config=snb_bi.pgbench.json -T 30` | `\phase_barrier` waits for all `N` clients to reach the barrier. With timer mode (`-T`), some clients finish when the timer expires while others block at `\phase_barrier`. | Always use bounded transaction count `-t <N>` (e.g., `-t 3`) when running scripts containing `\phase_barrier`. |
 | **`RULE-04`** | Using `\reservoir_pop` in custom `.sql` scripts | The meta-command name in `commands.c` is `\reservoir_sample`. | Use `\reservoir_sample <res_name> <var_name> [<default_expr>]` and pass `--reservoir=<res_name>:<capacity>` on the CLI. |
@@ -157,20 +166,26 @@ python3 src/bin/pgbench/viewer/pgbench_viewer.py --log-db="dbname=perffarm_metri
 
 ---
 
-## 7. Copy-Pasteable Subagent Prompt Templates
+## 7. Copy-Pasteable Subagent Prompt Templates (`DeepCoder` / `invoke_subagent`)
 
 ### Template 1: A/B GUC or Patch Evaluation on `pgbench-c` / `pgbench-htap`
 > **Task**: Evaluate the performance impact of `<GUC_OR_PATCH>` on PostgreSQL using `pgbench4perffarm` (`pgbench-c` and `pgbench-htap`).  
 > **Instructions**:  
-> 1. Read `AGENTS.md` and `doc/agent-guide-pgbench.md` first.  
-> 2. Build and install `pgbench4perffarm` against `PG_CONFIG=<path>`.  
-> 3. Initialize golden template databases `tpl_c` (`pgbench_c.pgbench.json -i -s 2`) and `tpl_htap` (`pgbench_htap.pgbench.json -i -s 2`).  
+> 1. Read `AGENTS.md`, `~/.gemini/config/skills/pgbench4perffarm/SKILL.md`, and `doc/agent-guide-pgbench.md` first. Never run `find` or `grep` inside `google3/` (use `code_search`), and write all runtime databases/reports to `/tmp` or `/var/tmp` (never into CitC).  
+> 2. Build and install `pgbench4perffarm` against `PG_CONFIG=<path>` (e.g. `/usr/local/google/home/hannuk/pg20_install/bin/pg_config` or via `/google/bin/releases/arca9-local-blaze-cli/blaze-for-agents`).  
+> 3. Initialize golden template databases `tpl_c` (`pgbench_order.pgbench.json -i -s 2`) and `tpl_htap` (`pgbench_htap.pgbench.json -i -s 2`).  
 > 4. For both `baseline` and `candidate`, clone from the template database (`createdb -T ...`), run a `30s` timed benchmark (`-T 30`) logging to `--json-report` and `--log-db="dbname=perffarm_metrics"`, and verify the server log has zero leak warnings or errors.  
 > 5. Query `SELECT * FROM pgbench_compare_runs('baseline_c', 'candidate_c');` and `SELECT * FROM pgbench_compare_runs('baseline_htap', 'candidate_htap');` and report TPS and P50/P95/P99 latency deltas.
 
 ### Template 2: Graph Engine Comparison (`SQL` vs `SQL_UD` vs `SQL/PGQ`)
 > **Task**: Compare graph query performance across the `pgbench-graph`, `pgbench-graph-sql-ud`, and `pgbench-graph-pgq` suites in `pgbench4perffarm`.  
 > **Instructions**:  
-> 1. Read `AGENTS.md` and `doc/agent-guide-pgbench.md`.  
+> 1. Read `AGENTS.md`, `~/.gemini/config/skills/pgbench4perffarm/SKILL.md`, and `doc/agent-guide-pgbench.md`.  
 > 2. Initialize each graph template DB (`lsqb.pgbench.json -i -s 1`) and run bounded transaction runs (`-t 5`) for `lsqb.pgbench.json`, `snb_interactive.pgbench.json`, and `snb_bi.pgbench.json` across `workloads/pgbench-graph/`, `workloads/pgbench-graph-sql-ud/`, and `workloads/pgbench-graph-pgq/`, logging all runs to `--log-db="dbname=perffarm_metrics"`.  
 > 3. Compare all runs via `SELECT * FROM pgbench_compare_runs(ARRAY[1,2,3]::bigint[]);`.
+
+### Template 3: Re-Creating `pgbench-order` (`pgbench-c`) for a New SQL Dialect or Non-SQL Query Language
+> **Task**: Re-create the wholesale order-entry OLTP workload (`pgbench-order` / `pgbench-c`) for `<TARGET_SQL_DIALECT_OR_NON_SQL_LANGUAGE>`.  
+> **Instructions**:  
+> 1. Read `doc/agent-guide-pgbench-order.md` and `skills/pgbench4perffarm/references/pgbench_order_workflow_and_porting_spec.md` for the exact 9-entity schema, `nurand`/`c_last`/`permute` formulas, all 5 transaction specifications (`New-Order`, `Payment`, `Order-Status`, `Delivery`, `Stock-Level`), `Model A` server-side `PL/pgSQL` stored procedures vs. `Model B` pure client-driven SQL DML templates, non-SQL Cypher/Document/KV mappings, and the 8 post-run consistency invariants (`verify_pgbench_order_invariants.sql`).  
+> 2. Implement the schema, initial loader, 5 weighted transaction scripts (`45:43:4:4:4`), and `.pgbench.json` manifest, then verify at `-s 2` that all 8 `\validate_result` invariants pass with zero unexpected failed transactions.

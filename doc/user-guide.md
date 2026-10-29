@@ -1,13 +1,21 @@
+<!--
+  INSPIRATION & TRADEMARK DISCLAIMER:
+  The benchmark workloads in this repository are clean-room, non-comparable engineering workloads
+  historically inspired by industry benchmarks (such as TPC-B, TPC-C, TPC-E, TPC-H, TPC-DS,
+  CH-benCHmark, LDBC, and VecBench). Those names are mentioned ONLY in this opening header comment
+  to acknowledge architectural inspiration. Throughout all file names, titles, documentation,
+  configurations, and scripts, always use the clean-room `pgbench-*` workload names.
+-->
 # `pgbench4perffarm` User Guide: General Usage, Features & Subsystems Overview
 
 `pgbench4perffarm` is a standalone, cross-version distribution of the next-generation PostgreSQL `pgbench` benchmarking system (extracted from patch series `v6`). It builds cleanly via `PGXS` against **PostgreSQL 14, 15, 16, 17, 18, 19, and 20devel**, providing:
 
 1. **Modular `pgbench` Client Driver (`src/bin/pgbench/`)**: Multi-group client orchestration (`--group`), declarative JSON/JSONC configuration (`--config`, `--dump-config`), structured loops and exception handling (`\for`, `\while`, `\try`/`\catch`), typed runtime values (`TEXT`, `TIMESTAMP`, `ARRAY`, `VECTOR`, `BYTEA`), lock-free shared reservoirs (`--reservoir`), causal consistency watermarks, phased execution barriers (`\phase_barrier`), in-script result validation (`\validate_result`), ANN `Recall@K` & `nDCG@K` telemetry (`\record_recall`), base-2 HDR latency histograms, SLA enforcement (`--sla`), structured JSON reporting (`--json-report`), and direct PostgreSQL telemetry streaming (`--log-db`).
 2. **Server-Side C Generator Extension (`contrib/pgbench/`)**: Exposes 51 SQL-callable C functions in `SCHEMA pgbench` (`CREATE EXTENSION pgbench;`) sharing the exact same deterministic PRNG, hashing, permutation, string, calendar, graph, and vector generation algorithms (`src/common/pgbench_funcs.c`) as the `pgbench` client.
-3. **Eight Ready-to-Run Workload Suites (`workloads/`)**: Self-contained, zero-external-dependency benchmark suites covering OLTP (`pgbench-b`, `pgbench-c`, `pgbench-e`), Decision Support OLAP (`pgbench-h`, `pgbench-ds`), Hybrid HTAP (`pgbench-htap`), Graph Analytics across 4 query engines (`pgbench-graph`, `pgbench-graph-sql-ud`, `pgbench-graph-pgq`, `pgbench-graph-plpgq`), and Vector ANN Search & Index Aging (`pgbench-vec`).
+3. **Eight Ready-to-Run Workload Suites (`workloads/`)**: Self-contained, zero-external-dependency benchmark suites covering OLTP (`pgbench-banking` / `pgbench-b`, `pgbench-order` / `pgbench-c`, `pgbench-brokerage` / `pgbench-e`), Decision Support OLAP (`pgbench-analytics` / `pgbench-h`, `pgbench-retail` / `pgbench-ds`), Hybrid HTAP (`pgbench-htap`), Graph Analytics across 4 query engines (`pgbench-graph`, `pgbench-graph-sql-ud`, `pgbench-graph-pgq`, `pgbench-graph-plpgq`), and Vector ANN Search & Index Aging (`pgbench-vec`).
 4. **Local WebAssembly Telemetry Viewer (`viewer/`)**: A zero-dependency Python (`bottle.py`) + `Water.css` + 439-byte WebAssembly (`wasm/pgbench_chart.wasm`) web application for inspecting single runs, pairwise regression diffs, multi-run matrices, live streaming progress, and interactive SQL explorations.
 
-> **Disclaimer**: All `pgbench-*` workload suites are **non-comparable, inspired-by workloads** for PostgreSQL engineering and testing. Results represent un-audited internal engineering measurements and do not constitute official certified TPC, LDBC, or VecBench benchmark results.
+> **Disclaimer**: All `pgbench-*` workload suites are **non-comparable, clean-room engineering workloads** for PostgreSQL engineering and testing. Results represent un-audited internal engineering measurements and do not constitute official certified industry benchmark results.
 
 ---
 
@@ -112,7 +120,7 @@ The `pgbench` codebase is modularized into 12 cohesive subsystems with clean own
 | **Socket Multiplexer** | `src/bin/pgbench/poller.c`, `poller.h` | Cross-platform non-blocking socket polling abstraction (`ppoll()` on POSIX, `select()` tracking both read and write fd sets on Windows). |
 | **Database Initializer** | `src/bin/pgbench/init.c`, `init.h` | Standard `-i` (`tpcb-like`) table creation/population and multi-stage `--config=<file> -i` initialization step runner. |
 | **Database Telemetry (`--log-db`)** | `src/bin/pgbench/logdb.c`, `logdb.h` | Bootstraps the 3-tier 9-table PostgreSQL telemetry schema, streams `-P` progress, `--aggregate-interval` windows, and `-l` transaction traces via `COPY ... FROM STDIN`, and installs SQL comparison SRFs (`pgbench_show_run`, `pgbench_compare_runs`). |
-| **Shared PRNG & `contrib/pgbench`** | `src/common/pgbench_funcs.c`, `contrib/pgbench/` | Frontend/backend-agnostic C implementations of PRNG distributions, Murmur2/FNV-1a hashes, Feistel permutations (`permute`), `nurand`, `c_last`, date arithmetic, clustered/planted vectors, and R-MAT/LDBC correlated graph edges. |
+| **Shared PRNG & `contrib/pgbench`** | `src/common/pgbench_funcs.c`, `contrib/pgbench/` | Frontend/backend-agnostic C implementations of PRNG distributions, Murmur2/FNV-1a hashes, Feistel permutations (`permute`), `nurand`, `c_last`, date arithmetic, clustered/planted vectors, and R-MAT/community-correlated graph edges. |
 | **Web Telemetry Viewer** | `src/bin/pgbench/viewer/` | Zero-dependency `bottle.py` + `Water.css` + 439-byte WebAssembly (`pgbench_chart.wasm`) web dashboard and two-stage metatemplate SQL Data Explorer. |
 
 ---
@@ -194,7 +202,7 @@ Real-world database workloads rarely consist of a single homogeneous client pool
 pgbench -n -T 60 -s 2 -D scale=2 \
   --group="name=oltp,clients=8,threads=4,file=workloads/pgbench-htap/pgbench_htap_oltp.sql" \
   --group="name=olap,clients=2,threads=2,sequential=true,file=workloads/pgbench-htap/pgbench_htap_olap_q1.sql@20,file=workloads/pgbench-htap/pgbench_htap_olap_q3.sql@20" \
-  --group="name=refresh,clients=1,threads=1,rate=2,file=workloads/pgbench-h/pgbench_h_refresh.sql" \
+  --group="name=refresh,clients=1,threads=1,rate=2,file=workloads/pgbench-analytics/pgbench_analytics_refresh.sql" \
   bench_htap
 ```
 
@@ -228,7 +236,7 @@ Pass one or more `--sla` specifications on the command line (or in `.pgbench.jso
 
 | Field | Supported Values | Examples |
 | :--- | :--- | :--- |
-| `<target>` | `total` / `all` / `*` (default when omitted), `<group_name>`, `<script_name>` (or script basename without `.sql`) | `total:`, `oltp:`, `snb_readers:`, `pgbench_c_new_order:` |
+| `<target>` | `total` / `all` / `*` (default when omitted), `<group_name>`, `<script_name>` (or script basename without `.sql`) | `total:`, `oltp:`, `snb_readers:`, `pgbench_order_new_order:` |
 | `<named_metric>` | Any named recall stream recorded via `\record_recall ... <metric_name>` (or `schedule_lag` when combined with `:p<X>`) | `r_unfiltered:`, `r_prefilter:`, `r_aging:`, `schedule_lag:` |
 | `<metric>` | `p<X>` (e.g., `p50`, `p95`, `p99`, `p99.9`), `avg` / `latency_avg`, `schedule_lag:p<X>` / `schedule_lag_p<X>`, `ontime_pct` *(when `-R` / `rate=` or `--replay` is active)*, `recall`, `recall_p<X>` / `recall:p<X>`, `tps` / `qps`, `error_rate`, `validation_failures`, `validation_pct` | `p95<=50ms`, `schedule_lag:p99<=10ms`, `ontime_pct>=95%`, `recall>=0.90`, `r_unfiltered:recall>=0.95`, `r_unfiltered:recall:p5>=0.80`, `tps>=500`, `error_rate<=0%`, `validation_failures<=0` |
 | `<operator>` | `<=`, `>=` | `<=`, `>=` |
@@ -290,11 +298,11 @@ Replay production or benchmark timestamp traces directly with `--replay=<trace.c
 
 | Suite | Directory | Domain | Key Features Exercised | Detailed Guide |
 | :--- | :--- | :--- | :--- | :--- |
-| **`pgbench-b`** | `workloads/pgbench-b/` | Banking OLTP | Server-side stored procedures (`CALL`), `pgbench.random()` | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
-| **`pgbench-c`** | `workloads/pgbench-c/` | Order-Entry OLTP | 9 tables, 5 weighted scripts, `nurand`, `c_last`, `\try`/`\catch` 1% rollback, `\keying_time`/`\think_time`, `\for` | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
-| **`pgbench-e`** | `workloads/pgbench-e/` | Brokerage OLTP | 16 tables, 10 stored procedures, 6 weighted scripts, limit-order rollbacks | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
-| **`pgbench-h`** | `workloads/pgbench-h/` | Decision Support OLAP | 8 tables, `Q1`–`Q19` `sequential=true` stream + throttled `RF1`/`RF2` refresh `--group` | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
-| **`pgbench-ds`** | `workloads/pgbench-ds/` | Retail Star-Schema OLAP | 13 star-schema tables, CTE/window reporting `--group` + concurrent maintenance `--group` | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
-| **`pgbench-htap`** | `workloads/pgbench-htap/` | Hybrid OLTP + OLAP | Operational + analytical schema, simultaneous `oltp` & `olap` groups with independent SLAs | [`tpc-and-htap-workloads.md`](tpc-and-htap-workloads.md) |
+| **`pgbench-banking`** (`pgbench-b`) | `workloads/pgbench-banking/` (`pgbench-b/`) | Banking OLTP | Server-side stored procedures (`CALL`), `pgbench.random()` | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
+| **`pgbench-order`** (`pgbench-c`) | `workloads/pgbench-order/` (`pgbench-order/`) | Order-Entry OLTP | 9 tables, 5 weighted scripts, `nurand`, `c_last`, `\try`/`\catch` 1% rollback, `\keying_time`/`\think_time`, `\for` | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
+| **`pgbench-brokerage`** (`pgbench-e`) | `workloads/pgbench-brokerage/` (`pgbench-e/`) | Brokerage OLTP | 16 tables, 10 stored procedures, 6 weighted scripts, limit-order rollbacks | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
+| **`pgbench-analytics`** (`pgbench-h`) | `workloads/pgbench-analytics/` (`pgbench-h/`) | Decision Support OLAP | 8 tables, `Q1`–`Q19` `sequential=true` stream + throttled `RF1`/`RF2` refresh `--group` | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
+| **`pgbench-retail`** (`pgbench-ds`) | `workloads/pgbench-retail/` (`pgbench-ds/`) | Retail Star-Schema OLAP | 13 star-schema tables, CTE/window reporting `--group` + concurrent maintenance `--group` | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
+| **`pgbench-htap`** | `workloads/pgbench-htap/` | Hybrid OLTP + OLAP | Operational + analytical schema, simultaneous `oltp` & `olap` groups with independent SLAs | [`relational-and-htap-workloads.md`](relational-and-htap-workloads.md) |
 | **`pgbench-graph`** | `workloads/pgbench-graph*` | Social & Financial Graph | LSQB, SNB Interactive, SNB BI, FinBench, Graphalytics across `SQL`, `SQL_UD`, `PGQ`, and `plPGQ`; reservoirs, watermarks, `\phase_barrier`, `\validate_result` | [`graph-workloads.md`](graph-workloads.md) |
 | **`pgbench-vec`** | `workloads/pgbench-vec/` | Vector ANN & Hybrid RAG | Modes 1–6 (unfiltered, pre-filtered, post-filtered, insert, multi-vec, index aging), exact ground truth, `\record_recall`, Q1-vs-Q4 degradation | [`vector-workloads.md`](vector-workloads.md) |

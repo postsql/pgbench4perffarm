@@ -1,6 +1,6 @@
 {
-  "suite": "pgbench-e",
-  "description": "TPC-E-inspired financial brokerage OLTP workload across 16 tables and 10 stored procedures",
+  "suite": "pgbench-brokerage",
+  "description": "Financial brokerage OLTP workload across 16 tables and 10 stored procedures",
   "scale": 2,
   "no_vacuum": true,
   "clients": 8,

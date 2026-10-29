@@ -20,12 +20,12 @@
 
 \set root_id 1
 
--- 1. Breadth-First Search (BFS) via GRAPH_TABLE quantified path -[k IS knows]->{0,4}
+-- 1. Breadth-First Search (BFS) via GRAPH_TABLE quantified path MATCH ANY SHORTEST -[k IS knows]->{0,4}
 WITH bfs AS (
     SELECT g.vertex_id,
            MIN(g.depth) AS min_depth
       FROM GRAPH_TABLE (social_graph
-          MATCH (root IS Person WHERE root.id = :root_id)-[k IS knows WHERE k.src_id <= 1000 AND k.dst_id <= 1000]->{0,4}(dst IS Person WHERE dst.id <= 1000)
+          MATCH ANY SHORTEST (root IS Person WHERE root.id = :root_id)-[k IS knows]->{0,4}(dst IS Person)
           RETURN dst.id AS vertex_id, ARRAY_LENGTH(k) AS depth
       ) g
      GROUP BY g.vertex_id
@@ -38,19 +38,59 @@ SELECT count(*) AS bfs_reachable,
 \validate_result :bfs_root_depth 0
 \validate_result (:bfs_reachable >= 1 and :bfs_max_depth >= 0) true
 
--- 2. Weakly Connected Components (WCC) via GRAPH_TABLE quantified path over vertex partition
-WITH wcc AS (
-    SELECT g.vid,
-           LEAST(g.vid, MIN(g.nbr_id)) AS cid
+-- 2. Weakly Connected Components (WCC) — 4-stage iterative 1-hop label propagation over GRAPH_TABLE
+WITH vertices AS (
+    SELECT vid
       FROM GRAPH_TABLE (social_graph
-          MATCH (p IS Person WHERE p.id <= 1000)-[k IS knows WHERE k.src_id <= 1000 AND k.dst_id <= 1000]->{0,2}(dst IS Person WHERE dst.id <= 1000)
-          RETURN p.id AS vid, dst.id AS nbr_id
-      ) g
-     GROUP BY g.vid
+          MATCH (p IS Person)
+          RETURN p.id AS vid
+      )
+),
+edges AS (
+    SELECT src_id, dst_id
+      FROM GRAPH_TABLE (social_graph
+          MATCH (src IS Person)-[k IS knows]->(dst IS Person)
+          RETURN k.src_id AS src_id, k.dst_id AS dst_id
+      )
+),
+wcc0 AS (
+    SELECT vid, vid AS cid FROM vertices
+),
+wcc1 AS (
+    SELECT w.vid,
+           LEAST(w.cid, COALESCE(MIN(nbr.cid), w.cid)) AS cid
+      FROM wcc0 w
+      LEFT JOIN @{join_type=HASH_JOIN} edges e ON e.dst_id = w.vid
+      LEFT JOIN @{join_type=HASH_JOIN} wcc0 nbr ON nbr.vid = e.src_id
+     GROUP BY w.vid, w.cid
+),
+wcc2 AS (
+    SELECT w.vid,
+           LEAST(w.cid, COALESCE(MIN(nbr.cid), w.cid)) AS cid
+      FROM wcc1 w
+      LEFT JOIN @{join_type=HASH_JOIN} edges e ON e.dst_id = w.vid
+      LEFT JOIN @{join_type=HASH_JOIN} wcc1 nbr ON nbr.vid = e.src_id
+     GROUP BY w.vid, w.cid
+),
+wcc3 AS (
+    SELECT w.vid,
+           LEAST(w.cid, COALESCE(MIN(nbr.cid), w.cid)) AS cid
+      FROM wcc2 w
+      LEFT JOIN @{join_type=HASH_JOIN} edges e ON e.dst_id = w.vid
+      LEFT JOIN @{join_type=HASH_JOIN} wcc2 nbr ON nbr.vid = e.src_id
+     GROUP BY w.vid, w.cid
+),
+wcc4 AS (
+    SELECT w.vid,
+           LEAST(w.cid, COALESCE(MIN(nbr.cid), w.cid)) AS cid
+      FROM wcc3 w
+      LEFT JOIN @{join_type=HASH_JOIN} edges e ON e.dst_id = w.vid
+      LEFT JOIN @{join_type=HASH_JOIN} wcc3 nbr ON nbr.vid = e.src_id
+     GROUP BY w.vid, w.cid
 )
 SELECT count(DISTINCT cid) AS wcc_components,
        count(*) AS wcc_vertices
-  FROM wcc \gset
+  FROM wcc4 \gset
 
 \validate_result (:wcc_components >= 1 and :wcc_components <= :wcc_vertices) true
 
@@ -59,7 +99,7 @@ WITH sssp AS (
     SELECT g.vid,
            MIN(g.dist) AS min_dist
       FROM GRAPH_TABLE (social_graph
-          MATCH (src IS Person WHERE src.id = :root_id)-[k IS knows WHERE k.src_id <= 1000 AND k.dst_id <= 1000]->{0,3}(dst IS Person WHERE dst.id <= 1000)
+          MATCH (src IS Person WHERE src.id = :root_id)-[k IS knows]->{0,3}(dst IS Person)
           LET dist = COALESCE(SUM(k.weight), 0.0)
           RETURN dst.id AS vid, dist
       ) g
@@ -76,15 +116,15 @@ SELECT COALESCE(MIN(IF(vid = :root_id, min_dist, NULL)), -1.0) AS sssp_root_dist
 WITH vertices AS (
     SELECT vid
       FROM GRAPH_TABLE (social_graph
-          MATCH (p IS Person WHERE p.id <= 1000)
+          MATCH (p IS Person)
           RETURN p.id AS vid
       )
 ),
 edges AS (
     SELECT src_id, dst_id
       FROM GRAPH_TABLE (social_graph
-          MATCH (src IS Person WHERE src.id <= 1000)-[IS knows]->(dst IS Person WHERE dst.id <= 1000)
-          RETURN src.id AS src_id, dst.id AS dst_id
+          MATCH (src IS Person)-[k IS knows]->(dst IS Person)
+          RETURN k.src_id AS src_id, k.dst_id AS dst_id
       )
 ),
 n_cte AS (
@@ -94,7 +134,7 @@ deg AS (
     SELECT v.vid,
            CAST(count(k.dst_id) AS INT64) AS out_deg
       FROM vertices v
-      LEFT JOIN edges k ON k.src_id = v.vid
+      LEFT JOIN @{join_type=HASH_JOIN} edges k ON k.src_id = v.vid
      GROUP BY v.vid
 ),
 pr0 AS (
@@ -112,8 +152,8 @@ pr1 AS (
       FROM pr0 p
       CROSS JOIN n_cte
       CROSS JOIN dangling0 d0
-      LEFT JOIN edges k ON k.dst_id = p.vid
-      LEFT JOIN pr0 src ON src.vid = k.src_id
+      LEFT JOIN @{join_type=HASH_JOIN} edges k ON k.dst_id = p.vid
+      LEFT JOIN @{join_type=HASH_JOIN} pr0 src ON src.vid = k.src_id
      GROUP BY p.vid, p.out_deg, n_cte.n, d0.dmass
 ),
 dangling1 AS (
@@ -127,8 +167,8 @@ pr2 AS (
       FROM pr1 p
       CROSS JOIN n_cte
       CROSS JOIN dangling1 d1
-      LEFT JOIN edges k ON k.dst_id = p.vid
-      LEFT JOIN pr1 src ON src.vid = k.src_id
+      LEFT JOIN @{join_type=HASH_JOIN} edges k ON k.dst_id = p.vid
+      LEFT JOIN @{join_type=HASH_JOIN} pr1 src ON src.vid = k.src_id
      GROUP BY p.vid, p.out_deg, n_cte.n, d1.dmass
 )
 SELECT ROUND(sum(pr), 6) AS pr_total_mass,
@@ -138,24 +178,44 @@ SELECT ROUND(sum(pr), 6) AS pr_total_mass,
 \validate_result :pr_total_mass 1.0 0.01
 \validate_result :pr_ordered true
 
--- 5. Local Clustering Coefficient (LCC) per vertex using GRAPH_TABLE triangle pattern matching:
+-- 5. Local Clustering Coefficient (LCC) per vertex using GRAPH_TABLE + degree-ordered triangle listing:
 --    2 * triangles(v) / (deg(v) * (deg(v) - 1))
-WITH deg AS (
-    SELECT src_id AS vid, count(DISTINCT dst_id) AS d
+WITH edges AS (
+    SELECT src_id, dst_id
       FROM GRAPH_TABLE (social_graph
-          MATCH (src IS Person WHERE src.id <= 1000)-[IS knows]->(dst IS Person WHERE dst.id <= 1000)
-          RETURN src.id AS src_id, dst.id AS dst_id
+          MATCH (src IS Person)-[k IS knows]->(dst IS Person)
+          RETURN k.src_id AS src_id, k.dst_id AS dst_id
       )
+),
+deg AS (
+    SELECT src_id AS vid, count(DISTINCT dst_id) AS d
+      FROM edges
      GROUP BY src_id
+),
+low_to_high AS (
+    SELECT e.src_id AS u, e.dst_id AS v
+      FROM edges e
+      JOIN @{join_type=HASH_JOIN} deg du ON du.vid = e.src_id
+      JOIN @{join_type=HASH_JOIN} deg dv ON dv.vid = e.dst_id
+     WHERE du.d < dv.d OR (du.d = dv.d AND e.src_id < e.dst_id)
+),
+unique_tri AS (
+    SELECT e1.u AS a, e1.v AS b, e2.v AS c
+      FROM low_to_high e1
+      JOIN @{join_type=HASH_JOIN} low_to_high e2 ON e2.u = e1.u
+      JOIN @{join_type=HASH_JOIN} low_to_high e3 ON e3.u = e1.v AND e3.v = e2.v
+),
+tri_vertices AS (
+    SELECT a AS vid FROM unique_tri
+    UNION ALL
+    SELECT b AS vid FROM unique_tri
+    UNION ALL
+    SELECT c AS vid FROM unique_tri
 ),
 tri AS (
     SELECT vid,
            count(*) AS closed_pairs
-      FROM GRAPH_TABLE (social_graph
-          MATCH (p1 IS Person WHERE p1.id <= 1000)-[IS knows]->(p2 IS Person WHERE p2.id <= 1000)-[IS knows]->(p3 IS Person WHERE p3.id <= 1000)<-[IS knows]-(p1 IS Person)
-          WHERE p3.id > p2.id
-          RETURN p1.id AS vid
-      )
+      FROM tri_vertices
      GROUP BY vid
 ),
 lcc_per_vertex AS (
@@ -165,7 +225,7 @@ lcc_per_vertex AS (
                ELSE LEAST(1.0, CAST(2.0 * COALESCE(tri.closed_pairs, 0) AS FLOAT64) / CAST(deg.d * (deg.d - 1) AS FLOAT64))
            END AS lcc
       FROM deg
-      LEFT JOIN tri ON tri.vid = deg.vid
+      LEFT JOIN @{join_type=HASH_JOIN} tri ON tri.vid = deg.vid
 )
 SELECT COALESCE(avg(lcc), 0.0) AS avg_lcc
   FROM lcc_per_vertex \gset

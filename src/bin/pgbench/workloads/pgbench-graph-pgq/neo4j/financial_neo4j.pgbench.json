@@ -1,0 +1,21 @@
+{
+  "suite": "pgbench-graph-neo4j-financial",
+  "description": "Financial Transaction Graph Workload Suite using Neo4j Cypher",
+  "driver": "neo4j",
+  "dbname": "http://neo4j:benchpass@127.0.0.1:7474/neo4j",
+  "scale": 1000,
+  "clients": 4,
+  "threads": 2,
+  "transactions": 25,
+  "query_mode": "simple",
+  "no_vacuum": true,
+  "scripts": [
+    {
+      "file": "pgbench_graph_neo4j_financial.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

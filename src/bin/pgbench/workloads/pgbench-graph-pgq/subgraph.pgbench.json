@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-pgq-subgraph",
-  "description": "LDBC-inspired Labelled Subgraph Query Benchmark (LSQB Q1-Q9) using ISO SQL/PGQ GRAPH_TABLE",
+  "description": "Labelled Subgraph Query Benchmark (subgraph Q1-Q9) using ISO SQL/PGQ GRAPH_TABLE",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

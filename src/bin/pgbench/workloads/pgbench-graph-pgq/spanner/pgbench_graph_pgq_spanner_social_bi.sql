@@ -45,7 +45,7 @@ WITH msg_base AS (
            END AS length_cat,
            g.length
       FROM GRAPH_TABLE (social_graph
-          MATCH (m IS Message WHERE (m.id <= 4000 OR m.id > 1000000000) AND m.created_ts <= :cutoff_ts)
+          MATCH (m IS Message WHERE m.created_ts <= :cutoff_ts)
           RETURN m.parent_message_id AS parent_message_id, m.length AS length
       ) g
 ),
@@ -83,7 +83,7 @@ SELECT count(*) AS bi2_rows
             RETURN t.id AS tag_id, t.name AS tag_name
         ) gt
         LEFT JOIN GRAPH_TABLE (social_graph
-            MATCH (m IS Message WHERE m.id <= 4000)-[IS hasTag]->(t IS Tag)
+            MATCH (m IS Message)-[IS hasTag]->(t IS Tag)
             RETURN t.id AS tag_id, m.created_ts AS created_ts
         ) gm ON gm.tag_id = gt.tag_id
        GROUP BY gt.tag_id, gt.tag_name
@@ -97,7 +97,7 @@ SELECT count(*) AS bi2_rows
 WITH top_forums AS (
     SELECT g.forum_id
       FROM GRAPH_TABLE (social_graph
-          MATCH (f IS Forum WHERE f.id <= 200)-[IS hasModerator]->(mod_p IS Person WHERE mod_p.id <= 1000)-[IS isLocatedIn]->(city IS Place WHERE city.part_of_id = :country_id)
+          MATCH (f IS Forum)-[IS hasModerator]->(mod_p IS Person)-[IS isLocatedIn]->(city IS Place WHERE city.part_of_id = :country_id)
           RETURN f.id AS forum_id
       ) g
      ORDER BY g.forum_id ASC
@@ -111,11 +111,11 @@ SELECT count(*) AS bi4_rows
              count(gmsg.msg_id) AS message_count
         FROM top_forums tf
         JOIN GRAPH_TABLE (social_graph
-            MATCH (f IS Forum WHERE f.id <= 200)-[IS hasMember]->(p IS Person WHERE p.id <= 1000)
+            MATCH (f IS Forum)-[IS hasMember]->(p IS Person)
             RETURN f.id AS forum_id, p.id AS person_id, p.first_name AS first_name, p.last_name AS last_name
         ) gm ON gm.forum_id = tf.forum_id
         LEFT JOIN GRAPH_TABLE (social_graph
-            MATCH (f IS Forum WHERE f.id <= 200)-[IS containerOf]->(m IS Message WHERE m.id <= 4000)-[IS hasCreator]->(p IS Person WHERE p.id <= 1000)
+            MATCH (f IS Forum)-[IS containerOf]->(m IS Message)-[IS hasCreator]->(p IS Person)
             RETURN f.id AS forum_id, m.id AS msg_id, p.id AS creator_id
         ) gmsg ON gmsg.forum_id = gm.forum_id AND gmsg.creator_id = gm.person_id
        GROUP BY gm.person_id, gm.first_name, gm.last_name
@@ -125,17 +125,44 @@ SELECT count(*) AS bi4_rows
 
 \validate_result (:bi4_rows >= 0) true
 
--- BI-9: Top Thread Initiators via GRAPH_TABLE quantified reply-tree expansion
-WITH thread_tree AS (
-    SELECT DISTINCT
-           g.root_post_id,
-           g.root_author_id,
-           g.msg_id
+-- BI-9: Top Thread Initiators via GRAPH_TABLE hash-joined 3-hop reply-tree expansion
+WITH roots AS (
+    SELECT post_id AS root_post_id, author_id AS root_author_id, post_id AS msg_id
       FROM GRAPH_TABLE (social_graph
-          MATCH (p IS Person WHERE p.id <= 1000)<-[IS hasCreator]-(post IS Message WHERE post.id <= 1000 AND post.parent_message_id IS NULL AND post.created_ts >= :window1_start AND post.created_ts <= :cutoff_ts)
-                <-[r IS replyOf WHERE r.created_ts >= :window1_start AND r.created_ts <= :cutoff_ts]-{0,3}(m IS Message WHERE m.id <= 1000)
-          RETURN post.id AS root_post_id, p.id AS root_author_id, m.id AS msg_id
-      ) g
+          MATCH (post IS Message WHERE post.parent_message_id IS NULL AND post.created_ts >= :window1_start AND post.created_ts <= :cutoff_ts)
+          RETURN post.id AS post_id, post.creator_id AS author_id
+      )
+),
+replies AS (
+    SELECT msg_id, parent_id
+      FROM GRAPH_TABLE (social_graph
+          MATCH (m IS Message)-[r IS replyOf WHERE r.created_ts >= :window1_start AND r.created_ts <= :cutoff_ts]->(parent IS Message)
+          RETURN m.id AS msg_id, parent.id AS parent_id
+      )
+),
+hop1 AS (
+    SELECT r0.root_post_id, r0.root_author_id, r1.msg_id
+      FROM roots r0
+      JOIN @{join_type=HASH_JOIN} replies r1 ON r1.parent_id = r0.msg_id
+),
+hop2 AS (
+    SELECT h1.root_post_id, h1.root_author_id, r2.msg_id
+      FROM hop1 h1
+      JOIN @{join_type=HASH_JOIN} replies r2 ON r2.parent_id = h1.msg_id
+),
+hop3 AS (
+    SELECT h2.root_post_id, h2.root_author_id, r3.msg_id
+      FROM hop2 h2
+      JOIN @{join_type=HASH_JOIN} replies r3 ON r3.parent_id = h2.msg_id
+),
+thread_tree AS (
+    SELECT root_post_id, root_author_id, msg_id FROM roots
+    UNION DISTINCT
+    SELECT root_post_id, root_author_id, msg_id FROM hop1
+    UNION DISTINCT
+    SELECT root_post_id, root_author_id, msg_id FROM hop2
+    UNION DISTINCT
+    SELECT root_post_id, root_author_id, msg_id FROM hop3
 )
 SELECT count(*) AS bi9_rows
   FROM (
@@ -150,35 +177,87 @@ SELECT count(*) AS bi9_rows
 
 \validate_result (:bi9_rows >= 1) true
 
--- BI-11: Friend Triangles within a Country via GRAPH_TABLE
+-- BI-11: Friend Triangles within a Country via GRAPH_TABLE (Chiba-Nishizeki degree-ordered HASH_JOIN)
+WITH pc AS (
+    SELECT p_id, country_id
+      FROM GRAPH_TABLE (social_graph
+          MATCH (p IS Person)-[IS isLocatedIn]->(c IS Place)-[IS isPartOf]->(country IS Place)
+          RETURN p.id AS p_id, country.id AS country_id
+      )
+),
+same_country_edges AS (
+    SELECT k.src_id, k.dst_id
+      FROM GRAPH_TABLE (social_graph
+          MATCH (p1 IS Person)-[k IS knows]->(p2 IS Person)
+          RETURN k.src_id AS src_id, k.dst_id AS dst_id
+      ) k
+      JOIN @{join_type=HASH_JOIN} pc pc1 ON pc1.p_id = k.src_id
+      JOIN @{join_type=HASH_JOIN} pc pc2 ON pc2.p_id = k.dst_id AND pc2.country_id = pc1.country_id
+),
+deg AS (
+    SELECT src_id AS vid, count(*) AS d
+      FROM same_country_edges
+     GROUP BY src_id
+),
+low_to_high AS (
+    SELECT e.src_id AS u, e.dst_id AS v
+      FROM same_country_edges e
+      JOIN @{join_type=HASH_JOIN} deg du ON du.vid = e.src_id
+      JOIN @{join_type=HASH_JOIN} deg dv ON dv.vid = e.dst_id
+     WHERE du.d < dv.d OR (du.d = dv.d AND e.src_id < e.dst_id)
+)
 SELECT count(*) AS bi11_triangles
-  FROM GRAPH_TABLE (social_graph
-      MATCH (p1 IS Person WHERE p1.id <= 200)-[IS knows]->(p2 IS Person WHERE p2.id <= 1000)-[IS knows]->(p3 IS Person WHERE p3.id <= 1000)-[IS knows]->(p1 IS Person)
-      WHERE p1.id < p2.id AND p2.id < p3.id
-      RETURN p1.city_id AS c1_id, p2.city_id AS c2_id, p3.city_id AS c3_id
-  ) tri
-  JOIN GRAPH_TABLE (social_graph
-      MATCH (c1 IS Place)-[IS isPartOf]->(country IS Place)
-      RETURN c1.id AS city_id, country.id AS country_id
-  ) l1 ON l1.city_id = tri.c1_id
-  JOIN GRAPH_TABLE (social_graph
-      MATCH (c2 IS Place)-[IS isPartOf]->(country IS Place)
-      RETURN c2.id AS city_id, country.id AS country_id
-  ) l2 ON l2.city_id = tri.c2_id AND l2.country_id = l1.country_id
-  JOIN GRAPH_TABLE (social_graph
-      MATCH (c3 IS Place)-[IS isPartOf]->(country IS Place)
-      RETURN c3.id AS city_id, country.id AS country_id
-  ) l3 ON l3.city_id = tri.c3_id AND l3.country_id = l1.country_id \gset
+  FROM low_to_high e1
+  JOIN @{join_type=HASH_JOIN} low_to_high e2 ON e2.u = e1.u
+  JOIN @{join_type=HASH_JOIN} low_to_high e3 ON e3.u = e1.v AND e3.v = e2.v \gset
 
 \validate_result (:bi11_triangles >= 0) true
 
--- BI-19: Interaction-Weighted Shortest Path Between Two Cities via quantified path + SUM(k.weight)
-SELECT COALESCE(min(g.total_weight), 0.0) AS bi19_min_weight
-  FROM GRAPH_TABLE (social_graph
-      MATCH (src IS Person WHERE src.id <= 1000 AND src.city_id = :city1_id)-[k IS knows WHERE k.src_id <= 1000 AND k.dst_id <= 1000]->{1,3}(dst IS Person WHERE dst.id <= 1000 AND dst.city_id = :city2_id)
-      LET total_weight = SUM(k.weight)
-      RETURN total_weight
-  ) g \gset
+-- BI-19: Interaction-Weighted Shortest Path Between Two Cities via multi-source frontier-pruned GRAPH_TABLE
+WITH edges AS (
+    SELECT src_id, dst_id, weight
+      FROM GRAPH_TABLE (social_graph
+          MATCH (src IS Person)-[k IS knows]->(dst IS Person)
+          RETURN k.src_id AS src_id, k.dst_id AS dst_id, k.weight AS weight
+      )
+),
+city2_Set AS (
+    SELECT pid
+      FROM GRAPH_TABLE (social_graph
+          MATCH (p IS Person WHERE p.city_id = :city2_id)
+          RETURN p.id AS pid
+      )
+),
+f1 AS (
+    SELECT g.dst_id AS curr_id, MIN(g.weight) AS min_w
+      FROM GRAPH_TABLE (social_graph
+          MATCH (src IS Person WHERE src.city_id = :city1_id)-[k IS knows]->(dst IS Person)
+          RETURN k.dst_id AS dst_id, k.weight AS weight
+      ) g
+     GROUP BY g.dst_id
+),
+f2 AS (
+    SELECT e.dst_id AS curr_id, MIN(f1.min_w + e.weight) AS min_w
+      FROM f1
+      JOIN @{join_type=HASH_JOIN} edges e ON e.src_id = f1.curr_id
+     GROUP BY e.dst_id
+),
+f3 AS (
+    SELECT e.dst_id AS curr_id, MIN(f2.min_w + e.weight) AS min_w
+      FROM f2
+      JOIN @{join_type=HASH_JOIN} edges e ON e.src_id = f2.curr_id
+      JOIN @{join_type=HASH_JOIN} city2_Set c2 ON c2.pid = e.dst_id
+     GROUP BY e.dst_id
+),
+all_paths AS (
+    SELECT f1.min_w FROM f1 JOIN city2_Set c2 ON c2.pid = f1.curr_id
+    UNION ALL
+    SELECT f2.min_w FROM f2 JOIN city2_Set c2 ON c2.pid = f2.curr_id
+    UNION ALL
+    SELECT f3.min_w FROM f3
+)
+SELECT COALESCE(ROUND(CAST(MIN(min_w) AS NUMERIC), 1), 0.0) AS bi19_min_weight
+  FROM all_paths \gset
 
 \validate_result (:bi19_min_weight >= 0.0) true
 
@@ -239,7 +318,7 @@ COMMIT;
 -- ============================================================================
 SELECT count(*) AS post_refresh_msgs
   FROM GRAPH_TABLE (social_graph
-      MATCH (m IS Message WHERE (m.id <= 4000 OR m.id > 1000000000) AND m.created_ts <= :cutoff_ts)
+      MATCH (m IS Message WHERE m.created_ts <= :cutoff_ts)
       RETURN 1 AS one
   ) \gset
 

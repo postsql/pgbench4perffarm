@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-subgraph",
-  "description": "LDBC-inspired Labelled Subgraph Query Benchmark (LSQB Q1-Q9) using pure SQL (UNION ALL)",
+  "description": "Labelled Subgraph Query Benchmark (subgraph Q1-Q9) using pure SQL (UNION ALL)",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

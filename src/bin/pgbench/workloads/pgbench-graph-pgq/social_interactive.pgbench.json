@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-pgq-social-interactive",
-  "description": "LDBC SNB Interactive v1/v2 multi-group readers and writers using ISO SQL/PGQ GRAPH_TABLE",
+  "description": "Social Network Interactive v1/v2 multi-group readers and writers using ISO SQL/PGQ GRAPH_TABLE",
   "scale": 1,
   "no_vacuum": true,
   "duration_sec": 60,

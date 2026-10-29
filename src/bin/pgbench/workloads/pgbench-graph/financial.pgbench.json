@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-financial",
-  "description": "LDBC FinBench financial transaction graph workload (TSR, TCR temporal chains/cycles, TW, TRW conditional ROLLBACK) using pure SQL",
+  "description": "Financial transaction graph workload (TSR, TCR temporal chains/cycles, TW, TRW conditional ROLLBACK) using pure SQL",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

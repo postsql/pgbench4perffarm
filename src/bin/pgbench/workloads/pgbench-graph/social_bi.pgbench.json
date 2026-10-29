@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-social-bi",
-  "description": "LDBC SNB Business Intelligence (Power -> \\phase_barrier -> Micro-Batch -> \\phase_barrier -> Throughput) using pure SQL",
+  "description": "Social Network Business Intelligence (Power -> \\phase_barrier -> Micro-Batch -> \\phase_barrier -> Throughput) using pure SQL",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

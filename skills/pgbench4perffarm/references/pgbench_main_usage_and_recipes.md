@@ -1,3 +1,11 @@
+<!--
+  INSPIRATION & TRADEMARK DISCLAIMER:
+  The benchmark workloads in this repository are clean-room, non-comparable engineering workloads
+  historically inspired by industry benchmarks (such as TPC-B, TPC-C, TPC-E, TPC-H, TPC-DS,
+  CH-benCHmark, LDBC, and VecBench). Those names are mentioned ONLY in this opening header comment
+  to acknowledge architectural inspiration. Throughout all file names, titles, documentation,
+  configurations, and scripts, always use the clean-room `pgbench-*` workload names.
+-->
 # Main `pgbench` Usage, Fast Verification Plan & Agent Execution Recipes
 
 This reference provides deterministic command recipes, initialization state machines, template database cloning patterns, JSONPath post-flight assertions, and error triage tables for running **`pgbench`** and **`contrib/pgbench`** in `postsql/pgbench4perffarm`.
@@ -9,19 +17,19 @@ This reference provides deterministic command recipes, initialization state mach
 Initializing multi-table analytical or graph workloads takes 5–60 seconds depending on scale factor. When comparing PostgreSQL GUC tuning, index definitions, or code patches across multiple runs, initialize a **golden template database once** and clone it in `< 0.5s` via `CREATE DATABASE ... TEMPLATE`:
 
 ```bash
-PG_BIN="$(/path/to/pg_config --bindir)"
-WORKLOADS="/path/to/pgbench4perffarm/src/bin/pgbench/workloads"
+PG_BIN="$(${PG_CONFIG:-/usr/local/google/home/hannuk/pg20_install/bin/pg_config} --bindir)"
+WORKLOADS="${REPO_ROOT:-/usr/local/google/home/hannuk/pgbench4perffarm}/src/bin/pgbench/workloads"
 
 # 1. Create and initialize golden template database once
 "$PG_BIN/createdb" bench_c_tpl
-"$PG_BIN/pgbench" --config="$WORKLOADS/pgbench-c/pgbench_c.pgbench.json" -i -s 2 bench_c_tpl
+"$PG_BIN/pgbench" --config="$WORKLOADS/pgbench-order/pgbench_c.pgbench.json" -i -s 2 bench_c_tpl
 
 # 2. For each experiment run, clone in <0.5s via filesystem copy
 "$PG_BIN/dropdb" --if-exists bench_c_run
 "$PG_BIN/createdb" -T bench_c_tpl bench_c_run
 
 # 3. Execute timed benchmark against the fresh clone
-"$PG_BIN/pgbench" --config="$WORKLOADS/pgbench-c/pgbench_c.pgbench.json" -s 2 -c 8 -j 4 -T 30 \
+"$PG_BIN/pgbench" --config="$WORKLOADS/pgbench-order/pgbench_c.pgbench.json" -s 2 -c 8 -j 4 -T 30 \
   --json-report=/tmp/bench_c_run.json bench_c_run
 ```
 
@@ -31,7 +39,7 @@ WORKLOADS="/path/to/pgbench4perffarm/src/bin/pgbench/workloads"
 
 All workload manifests live under `src/bin/pgbench/workloads/` (or `$(pg_config --sharedir)/pgbench/workloads/` after `make install`).
 
-### 2.1 `pgbench-b` (TPC-B-Inspired Stored-Procedure Banking OLTP)
+### 2.1 `pgbench-banking` / `pgbench-b` (Stored-Procedure Banking OLTP)
 ```bash
 W="src/bin/pgbench/workloads"
 pgbench --config="$W/pgbench-b/pgbench_b.pgbench.json" -i -s 10 "$DB"
@@ -39,28 +47,28 @@ pgbench --config="$W/pgbench-b/pgbench_b.pgbench.json" -s 10 -c 8 -j 4 -T 30 \
   --sla="p95<=25ms" --sla="error_rate<=0%" --json-report=/tmp/pgbench_b.json "$DB"
 ```
 
-### 2.2 `pgbench-c` (TPC-C-Inspired 9-Table Wholesale OLTP)
+### 2.2 `pgbench-order` / `pgbench-c` (9-Table Wholesale Order-Entry OLTP)
 ```bash
 W="src/bin/pgbench/workloads"
-# Single-command --config initialization & run
-pgbench --config="$W/pgbench-c/pgbench_c.pgbench.json" -i -s 2 "$DB"
-pgbench --config="$W/pgbench-c/pgbench_c.pgbench.json" -s 2 -c 8 -j 4 -T 30 \
+# Single-command --config initialization & run (use pgbench-order/pgbench_order.pgbench.json or pgbench-order/pgbench_c.pgbench.json)
+pgbench --config="$W/pgbench-order/pgbench_c.pgbench.json" -i -s 2 "$DB"
+pgbench --config="$W/pgbench-order/pgbench_c.pgbench.json" -s 2 -c 8 -j 4 -T 30 \
   --json-report=/tmp/pgbench_c.json "$DB"
 
 # Manual 3-stage initialization + weighted 5-script mix (45:43:4:4:4)
-pgbench -n -t 1 -f "$W/pgbench-c/pgbench_c_schema.sql" "$DB"
-pgbench -n -t 1 -c 4 -j 4 -D scale=2 -D num_workers=4 -f "$W/pgbench-c/pgbench_c_init.sql" "$DB"
-pgbench -n -t 1 -f "$W/pgbench-c/pgbench_c_constraints.sql" "$DB"
+pgbench -n -t 1 -f "$W/pgbench-order/pgbench_order_schema.sql" "$DB"
+pgbench -n -t 1 -c 4 -j 4 -D scale=2 -D num_workers=4 -f "$W/pgbench-order/pgbench_order_init.sql" "$DB"
+pgbench -n -t 1 -f "$W/pgbench-order/pgbench_order_constraints.sql" "$DB"
 pgbench -n -s 2 -D scale=2 -c 8 -j 4 -T 30 \
-  -f "$W/pgbench-c/pgbench_c_new_order.sql@45" \
-  -f "$W/pgbench-c/pgbench_c_payment.sql@43" \
-  -f "$W/pgbench-c/pgbench_c_order_status.sql@4" \
-  -f "$W/pgbench-c/pgbench_c_delivery.sql@4" \
-  -f "$W/pgbench-c/pgbench_c_stock_level.sql@4" \
+  -f "$W/pgbench-order/pgbench_order_new_order.sql@45" \
+  -f "$W/pgbench-order/pgbench_order_payment.sql@43" \
+  -f "$W/pgbench-order/pgbench_order_order_status.sql@4" \
+  -f "$W/pgbench-order/pgbench_order_delivery.sql@4" \
+  -f "$W/pgbench-order/pgbench_order_stock_level.sql@4" \
   --json-report=/tmp/pgbench_c.json "$DB"
 ```
 
-### 2.3 `pgbench-e` (TPC-E-Inspired 16-Table Brokerage OLTP)
+### 2.3 `pgbench-brokerage` / `pgbench-e` (16-Table Financial Brokerage OLTP)
 ```bash
 W="src/bin/pgbench/workloads"
 pgbench --config="$W/pgbench-e/pgbench_e.pgbench.json" -i -s 1 "$DB"
@@ -68,7 +76,7 @@ pgbench --config="$W/pgbench-e/pgbench_e.pgbench.json" -s 1 -c 8 -j 4 -T 30 \
   --json-report=/tmp/pgbench_e.json "$DB"
 ```
 
-### 2.4 `pgbench-h` (TPC-H-Inspired 8-Table Decision Support OLAP + Throttled Refresh)
+### 2.4 `pgbench-analytics` / `pgbench-h` (8-Table Decision Support OLAP + Throttled Refresh)
 ```bash
 W="src/bin/pgbench/workloads"
 pgbench --config="$W/pgbench-h/pgbench_h.pgbench.json" -i -s 1 "$DB"
@@ -76,7 +84,7 @@ pgbench --config="$W/pgbench-h/pgbench_h.pgbench.json" -s 1 -T 60 \
   --json-report=/tmp/pgbench_h.json "$DB"
 ```
 
-### 2.5 `pgbench-ds` (TPC-DS-Inspired 13-Table Star Schema OLAP + Maintenance)
+### 2.5 `pgbench-retail` / `pgbench-ds` (13-Table Star-Schema Retail OLAP + Maintenance)
 ```bash
 W="src/bin/pgbench/workloads"
 pgbench --config="$W/pgbench-ds/pgbench_ds.pgbench.json" -i -s 1 "$DB"
@@ -84,7 +92,7 @@ pgbench --config="$W/pgbench-ds/pgbench_ds.pgbench.json" -s 1 -T 60 \
   --json-report=/tmp/pgbench_ds.json "$DB"
 ```
 
-### 2.6 `pgbench-htap` (CH-benCHmark-Inspired Hybrid OLTP + OLAP with Isolated Groups)
+### 2.6 `pgbench-htap` (Hybrid OLTP + OLAP with Isolated Groups)
 ```bash
 W="src/bin/pgbench/workloads"
 # Single-command --config initialization & run
@@ -100,15 +108,16 @@ pgbench -n -s 2 -D scale=2 -T 60 \
   --json-report=/tmp/pgbench_htap.json "$DB"
 ```
 
-### 2.7 `pgbench-graph` (LDBC-Inspired Graph Across `SQL`, `SQL_UD`, and `SQL/PGQ`)
-Three workload directories cover the graph query engines, each containing 5 `.pgbench.json` manifests (`lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`):
+### 2.7 `pgbench-graph` (Property Graph Across `SQL`, `SQL_UD`, `SQL/PGQ`, and `plPGQ`)
+Four workload directories cover the graph query engines, each containing 5 `.pgbench.json` manifests (`lsqb.pgbench.json`, `snb_interactive.pgbench.json`, `snb_bi.pgbench.json`, `finbench.pgbench.json`, `graphalytics.pgbench.json`):
 - `workloads/pgbench-graph/` — Standard `WITH RECURSIVE` SQL CTEs (PostgreSQL 14–20devel)
 - `workloads/pgbench-graph-sql-ud/` — Recursive CTEs with `UNION DISTINCT ON (id ORDER BY weight)` (PostgreSQL 19+ / patched servers)
 - `workloads/pgbench-graph-pgq/` — ISO `SQL/PGQ` `GRAPH_TABLE` over `CREATE PROPERTY GRAPH` (PostgreSQL 19+)
+- `workloads/pgbench-graph-plpgq/` — V8/QuickJS `plPGQ` in-memory CSR/BFS/Dijkstra traversal via `plv8` or `pljs`
 
 ```bash
 W="src/bin/pgbench/workloads"
-# Initialize graph schema + correlated LDBC social network once
+# Initialize graph schema + correlated social network once
 pgbench --config="$W/pgbench-graph/lsqb.pgbench.json" -i -s 1 "$DB"
 
 # Run LSQB, SNB Interactive, and phased SNB BI
@@ -118,7 +127,7 @@ pgbench --config="$W/pgbench-graph/snb_bi.pgbench.json" -s 1 -c 2 -j 2 -t 2 --js
 ```
 > **CRITICAL**: Any script containing `\phase_barrier` (`snb_bi.pgbench.json`) **must** be executed with bounded transaction count `-t <N>`, never `-T <seconds>`.
 
-### 2.8 `pgbench-vec` (VecBench-Inspired Hybrid Vector ANN Search & Index Aging Degradation)
+### 2.8 `pgbench-vec` (Hybrid Vector ANN Search & Index Aging Degradation)
 ```bash
 W="src/bin/pgbench/workloads"
 # Initialize vector schema + clustered embeddings + exact ground truth (pgbench_vec_gt_gen.sql)
@@ -154,7 +163,7 @@ export PGHOST="${PGHOST:-/tmp}"
 
 declare -A MANIFESTS=(
   ["pgbench-b"]="pgbench-b/pgbench_b.pgbench.json"
-  ["pgbench-c"]="pgbench-c/pgbench_c.pgbench.json"
+  ["pgbench-c"]="pgbench-order/pgbench_c.pgbench.json"
   ["pgbench-e"]="pgbench-e/pgbench_e.pgbench.json"
   ["pgbench-h"]="pgbench-h/pgbench_h.pgbench.json"
   ["pgbench-ds"]="pgbench-ds/pgbench_ds.pgbench.json"

@@ -80,27 +80,30 @@ SELECT g.tag_name,
  LIMIT 10;
 
 -- IC5 & IC9: Forums joined and recent messages by friends-of-friends via GRAPH_TABLE
-WITH fof_forums AS (
-    SELECT DISTINCT g.fid, g.forum_id, g.title
+WITH fof AS (
+    SELECT DISTINCT g.fid
       FROM GRAPH_TABLE (social_graph
           MATCH (src IS Person WHERE src.id = :person_id)
                 -[IS knows]->(f1 IS Person)
                 -[IS knows]->(f2 IS Person WHERE f2.id <> :person_id)
-                <-[IS hasMember]-(f IS Forum)
-          RETURN f2.id AS fid, f.id AS forum_id, f.title AS title
+          RETURN f2.id AS fid
       ) g
 ),
+fof_forums AS (
+    SELECT DISTINCT fof.fid, g.forum_id, g.title
+      FROM fof
+      JOIN GRAPH_TABLE (social_graph
+          MATCH (f IS Forum)-[IS hasMember]->(p IS Person)
+          RETURN f.id AS forum_id, f.title AS title, p.id AS member_id
+      ) g ON g.member_id = fof.fid
+),
 fof_msgs AS (
-    SELECT DISTINCT g.fid, g.forum_id, g.msg_id
-      FROM GRAPH_TABLE (social_graph
-          MATCH (src IS Person WHERE src.id = :person_id)
-                -[IS knows]->(f1 IS Person)
-                -[IS knows]->(f2 IS Person WHERE f2.id <> :person_id)
-                <-[IS hasMember]-(f IS Forum)
-                -[IS containerOf]->(m IS Message)
-          WHERE m.creator_id = f2.id
-          RETURN f2.id AS fid, f.id AS forum_id, m.id AS msg_id
-      ) g
+    SELECT DISTINCT ff.fid, ff.forum_id, g.msg_id
+      FROM fof_forums ff
+      JOIN GRAPH_TABLE (social_graph
+          MATCH (f IS Forum)-[IS containerOf]->(m IS Message)-[IS hasCreator]->(p IS Person)
+          RETURN f.id AS forum_id, m.id AS msg_id, p.id AS creator_id
+      ) g ON g.forum_id = ff.forum_id AND g.creator_id = ff.fid
 )
 SELECT ff.forum_id,
        ff.title,

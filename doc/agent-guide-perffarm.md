@@ -1,7 +1,7 @@
 # Agent-Oriented Guide: Perffarm Animal Setup, Execution & Regression Analysis
 
-**Target Audience**: Autonomous AI coding/benchmarking agents, CI/CD runners, and database engineers operating **`perffarm/`** in `postsql/pgbench4perffarm`.  
-**Companion Skill**: [`skills/pgbench4perffarm/SKILL.md`](../skills/pgbench4perffarm/SKILL.md)  
+**Target Audience**: Autonomous AI coding/benchmarking agents (**Jetski**, Google3 `DeepCoder` / `invoke_subagent` subagents, Gemini CLI, Claude Code, Cursor, Codex), CI/CD runners, and database engineers operating **`perffarm/`** in `postsql/pgbench4perffarm` (`//third_party/pgext/pgbench4perffarm/perffarm`).  
+**Companion Skill**: [`skills/pgbench4perffarm/SKILL.md`](../skills/pgbench4perffarm/SKILL.md) (`~/.gemini/config/skills/pgbench4perffarm/SKILL.md`)  
 **Main `pgbench` Companion Guide**: [`doc/agent-guide-pgbench.md`](agent-guide-pgbench.md)  
 **Human Operational Guide**: [`doc/perffarm-guide.md`](perffarm-guide.md)
 
@@ -158,7 +158,7 @@ ORDER BY batch_id DESC, run_seq_idx ASC;
 
 -- Query 4: Direct side-by-side comparison between two commit SHAs across all steps
 SELECT test_name, metric, unit, sha_a_val, sha_b_val, abs_delta, pct_change, verdict
-FROM perffarm_compare_commits('2c10c2ce4d', 'dfd7ede529', 'lynx-x86-nvme', 'pgbench-c');
+FROM perffarm_compare_commits('f197fdee82', '3c5d9d914f', 'dev02_dev_e4a', 'pgbench-c');
 ```
 
 ---
@@ -174,12 +174,12 @@ When multiple Perffarm animals push telemetry to a shared central PostgreSQL dat
 
 ---
 
-## 7. Copy-Pasteable Prompt Templates for Directing Agents on Perffarm Tasks
+## 7. Copy-Pasteable Prompt Templates for Directing Agents (`DeepCoder` / `invoke_subagent`) on Perffarm Tasks
 
 ### Template 1: Provision a New Perffarm Animal & Run Fast Smoke Verification
-> **Task**: Set up a Perffarm benchmarking animal named `<ANIMAL_NAME>` in `<WORKDIR>` and run a fast smoke verification across `tpcb-like`, `pgbench-b`, and `pgbench-c`.  
+> **Task**: Set up a Perffarm benchmarking animal named `<ANIMAL_NAME>` (e.g., `dev02_dev_e4a`) in local `<WORKDIR>` (e.g., `/var/tmp/pgbench4perffarm_work`) and run a fast smoke verification across `tpcb-like`, `pgbench-b`, and `pgbench-c`.  
 > **Instructions**:  
-> 1. Read `AGENTS.md` and `doc/agent-guide-perffarm.md`.  
+> 1. Read `AGENTS.md`, `~/.gemini/config/skills/pgbench4perffarm/SKILL.md`, and `doc/agent-guide-perffarm.md`. Never place `WORKDIR` inside a CitC workspace (`/google/src/cloud/...`).  
 > 2. Run `ANIMAL_NAME=<ANIMAL_NAME> WORKDIR=<WORKDIR> ./perffarm/setup_machine.sh --config=perffarm/conf/animal.conf --init-config`.  
 > 3. Bootstrap the isolated Metrics DB via `./perffarm/setup_metrics_db.sh --config=perffarm/conf/animal.conf --ensure`.  
 > 4. Run `./perffarm/run_perffarm.sh --config=perffarm/conf/animal.conf --prebuilt-pg-config=<PG_CONFIG> --profile=smoke --tests=tpcb-like,pgbench-b,pgbench-c --durations=2,2 --fast-check --force`.  
@@ -188,7 +188,7 @@ When multiple Perffarm animals push telemetry to a shared central PostgreSQL dat
 ### Template 2: Execute a Multi-Commit Historical Regression Sweep
 > **Task**: Run a historical commit sweep across `perffarm/conf/commits_master_24h_last_month.txt` on `<TEST_NAME>` using `--durations=60,60,60,300` and produce a longitudinal regression report.  
 > **Instructions**:  
-> 1. Read `doc/agent-guide-perffarm.md`.  
+> 1. Read `~/.gemini/config/skills/pgbench4perffarm/SKILL.md` and `doc/agent-guide-perffarm.md`.  
 > 2. Verify `perffarm_metrics` is running via `./perffarm/setup_metrics_db.sh --config=perffarm/conf/animal.conf --status`.  
 > 3. Execute `./perffarm/run_perffarm.sh --config=perffarm/conf/animal.conf --branch=master --commits-file=perffarm/conf/commits_master_24h_last_month.txt --ci-status=github_success --profile=standard --tests=<TEST_NAME> --durations=60,60,60,300 --fast-check`.  
 > 4. Query `perffarm_commit_summary_v` and `perffarm_regressions_v`, and for any commit flagged with `verdict = 'REGRESSED'`, run `SELECT * FROM perffarm_compare_commits('<prev_sha>', '<regressed_sha>');`.

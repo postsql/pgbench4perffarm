@@ -82,7 +82,7 @@ contrib/pgbench extension:
     pgbench_random_poisson()
   - Hashes & permutations: pgbench_hash_fnv1a(), pgbench_hash_murmur2(),
     pgbench_permute()
-  - TPC-C generators: pgbench_nurand(), pgbench_c_last(),
+  - Order-entry generators: pgbench_nurand(), pgbench_c_last(),
     pgbench_random_astring(), pgbench_random_nstring()
   - Calendar & timestamp arithmetic: pgbench_parse_timestamp(),
     pgbench_format_timestamp(), pgbench_date_add(),
@@ -98,14 +98,14 @@ During script parsing (`parseScript()` in `script.c`), a static linking pass
 validates and resolves jump targets (`jump_target` and `endtry_target` on
 `Command` structs) for all block-structured meta-commands:
 
-  - `or var start .. end [BY s]` ... `\endfor`:
+  - `\for var start .. end [BY s]` ... `\endfor`:
       `META_FOR.jump_target` points to `META_ENDFOR + 1`;
       `META_ENDFOR.jump_target` points back to `META_FOR`.
       Runtime state is tracked on `st->loop_stack[MAX_LOOP_DEPTH]`.
   - `\while expr` ... `\endwhile`:
       `META_WHILE.jump_target` points to `META_ENDWHILE + 1`;
       `META_ENDWHILE.jump_target` points back to `META_WHILE`.
-  - `	ry` ... `[\catch ['SQLSTATE']]` ... `\endtry`:
+  - `\try` ... `[\catch ['SQLSTATE']]` ... `\endtry`:
       `META_TRY.jump_target` points to `META_CATCH` (or `META_ENDTRY` if no
       `\catch` is present); `META_TRY.endtry_target` and `META_CATCH.jump_target`
       point to `META_ENDTRY`.
@@ -123,7 +123,7 @@ and `CSTATE_END_COMMAND` transitions directly to `caught_jump_target`.
 Result Set Inspection & Array Binding (commands.c, variable.c)
 --------------------------------------------------------------
 - `processGSetResult()` inspects each column value returned by `\gset` or
-  `set`.  When a value starts with `{` and ends with `}`,
+  `\aset`.  When a value starts with `{` and ends with `}`,
   `parseArrayLiteral()` parses the 1D PostgreSQL array representation into a
   `PGBT_ARRAY` value (coercing unquoted elements to `NULL`, `int64`, `double`,
   `bool`, or `text`) and binds `<prefix><colname>_count` to the array length.
@@ -167,7 +167,7 @@ HDR Latency Histogram, SLA Validation & JSON Reporting (stats.c, engine.c)
 - `getLatencyPercentile()` interpolates within the target sub-bucket to bounded
   ~0.78% relative error for `p50`, `p90`, `p95`, `p99`, `p99.9`, or arbitrary
   `--sla` percentiles.
-- `printResults()` evaluates all `sla_rules[]`, derives `tpmC` and `QphH@SF`,
+- `printResults()` evaluates all `sla_rules[]`, derives `QPM` and `TPS`,
   and optionally writes the structured JSON report via `writeJsonReport()`.
 
 Direct Database Telemetry (--log-db) & Web Viewer (logdb.c, viewer/)

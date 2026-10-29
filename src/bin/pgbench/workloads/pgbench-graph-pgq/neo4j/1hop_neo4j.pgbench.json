@@ -1,0 +1,25 @@
+{
+  "suite": "pgbench-graph-neo4j-1hop",
+  "description": "1-Hop Neighborhood and Recent Message Query using Neo4j Cypher",
+  "driver": "neo4j",
+  "dbname": "http://neo4j:benchpass@127.0.0.1:7474/neo4j",
+  "scale": 1000,
+  "clients": 4,
+  "threads": 4,
+  "duration_sec": 30,
+  "query_mode": "simple",
+  "no_vacuum": true,
+  "reservoirs": {
+    "persons": 65536,
+    "messages": 65536
+  },
+  "scripts": [
+    {
+      "file": "pgbench_graph_neo4j_1hop.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

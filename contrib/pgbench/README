@@ -6,7 +6,7 @@ pgbench Extension Developer Notes
 Overview
 --------
 The `contrib/pgbench` extension exposes the shared statistical distributions,
-hashes, domain permutations, TPC-C NURand / syllable / string generators,
+hashes, domain permutations, order-entry NURand / syllable / string generators,
 calendar date arithmetic, and array generators from `src/common/pgbench_funcs.c`
 as SQL-callable functions in the `pgbench` schema.
 
@@ -16,7 +16,7 @@ Architecture
   around `src/common/pgbench_funcs.c`.
 - Session PRNG state is stored in `static pg_prng_state pgbench_ext_prng_state`
   and lazily seeded on first use if `pgbench.setseed()` has not been called.
-- Session-sticky NURand `C` constants for the standard TPC-C `A` domains
+- Session-sticky NURand `C` constants for the standard NURand `A` domains
   (`255`, `1023`, `8191`, and fallback) are maintained per backend session
   and reset whenever `pgbench.setseed()` is invoked.
 - `pgbench.format_string(text, VARIADIC "any")` inspects argument OIDs via

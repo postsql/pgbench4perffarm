@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-pgq-social-bi",
-  "description": "LDBC SNB Business Intelligence phased workload using ISO SQL/PGQ GRAPH_TABLE",
+  "description": "Social Network Business Intelligence phased workload using ISO SQL/PGQ GRAPH_TABLE",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

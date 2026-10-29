@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-graph-pgq-financial",
-  "description": "LDBC FinBench financial transaction graph workload using ISO SQL/PGQ GRAPH_TABLE",
+  "description": "Financial transaction graph workload using ISO SQL/PGQ GRAPH_TABLE",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

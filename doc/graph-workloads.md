@@ -1,13 +1,21 @@
+<!--
+  INSPIRATION & TRADEMARK DISCLAIMER:
+  The pgbench-graph* workload suites in this repository are clean-room, non-comparable engineering
+  workloads historically inspired by public specifications from the Graph Data Council (LDBC LSQB,
+  SNB Interactive, SNB BI, FinBench, and Graphalytics). Those names are mentioned in this opening
+  header comment to acknowledge architectural inspiration; results represent un-audited internal
+  engineering measurements and do not constitute official certified council benchmark results.
+-->
 # Graph Database Benchmark Suites Guide (`pgbench-graph*`)
 
-`pgbench4perffarm` includes a comprehensive, LDBC-inspired graph database benchmarking ecosystem covering both **social network property graphs** and **financial transaction graphs** across **4 workload suites** and **multiple SQL/PGQ execution engines**:
+`pgbench4perffarm` includes a comprehensive property graph database benchmarking ecosystem covering both **social network property graphs** and **financial transaction graphs** across **4 workload suites** and **multiple SQL/PGQ execution engines**:
 
 1. **`workloads/pgbench-graph/` (`SQL`)**: Standard relational SQL joins and `WITH RECURSIVE ... UNION ALL` CTEs with `ARRAY[...]` path tracking (runs on any PostgreSQL 14–20devel server).
 2. **`workloads/pgbench-graph-sql-ud/` (`SQL_UD`)**: Recursive CTEs utilizing `WITH RECURSIVE ... UNION DISTINCT ON (vid ORDER BY weight ASC)` for inline shortest-path, BFS, and connected-components frontier pruning.
 3. **`workloads/pgbench-graph-pgq/` (`PGQ`)**: Native ISO/IEC 9075-16 `SQL/PGQ` declarative property graph DDL (`CREATE PROPERTY GRAPH snb_graph` / `finbench_graph`) and `GRAPH_TABLE (... MATCH ... COLUMNS (...))` pattern matching.
 4. **Optional `plPGQ` Mode**: Procedural/macro `GRAPH_TABLE(snb_graph(), 'MATCH ...')` via the `pl_pgq` extension over `plv8` or `pljs`.
 
-> **Disclaimer**: All `pgbench-graph*` suites are **non-comparable, inspired-by engineering workloads** modeled after public specifications from the Graph Data Council (LDBC LSQB, SNB Interactive, SNB BI, FinBench, and Graphalytics). Results represent un-audited internal engineering measurements and do not constitute official `"LDBC Benchmark Results"`.
+> **Disclaimer**: All `pgbench-graph*` suites are **non-comparable, clean-room engineering workloads** (`LSQB`, `SNB Interactive`, `SNB BI`, `FinBench`, and `Graphalytics`). Results represent un-audited internal engineering measurements and do not constitute official certified council benchmark results.
 
 ---
 

@@ -1,6 +1,6 @@
 {
   "suite": "pgbench-vec-hybrid",
-  "description": "VecBench-inspired hybrid vector similarity search (Modes 1-5: unfiltered, pre-filtered, post-filtered, multi-vector fusion, and streaming upsert) with named Recall@K SLAs",
+  "description": "Hybrid vector similarity search (Modes 1-5: unfiltered, pre-filtered, post-filtered, multi-vector fusion, and streaming upsert) with named Recall@K SLAs",
   "scale": 1,
   "no_vacuum": true,
   "clients": 4,

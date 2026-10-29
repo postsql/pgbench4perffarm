@@ -1,0 +1,21 @@
+{
+  "suite": "pgbench-graph-neo4j-social-bi",
+  "description": "Social Graph Business Intelligence Phased Suite using Neo4j Cypher",
+  "driver": "neo4j",
+  "dbname": "http://neo4j:benchpass@127.0.0.1:7474/neo4j",
+  "scale": 1000,
+  "clients": 2,
+  "threads": 2,
+  "transactions": 1,
+  "query_mode": "simple",
+  "no_vacuum": true,
+  "scripts": [
+    {
+      "file": "pgbench_graph_neo4j_social_bi.sql",
+      "weight": 1
+    }
+  ],
+  "sla": [
+    "validation_failures<=0"
+  ]
+}

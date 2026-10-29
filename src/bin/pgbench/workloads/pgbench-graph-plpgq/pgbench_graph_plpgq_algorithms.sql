@@ -19,26 +19,13 @@
 
 \set root_id 1
 
--- 1. Breadth-First Search (BFS) via WITH RECURSIVE ... UNION DISTINCT ON (vertex_id) + GRAPH_TABLE edge step
-WITH RECURSIVE bfs AS (
-    SELECT g.vertex_id AS vertex_id,
-           0 AS min_depth,
-           0::bigint AS parent_id
+-- 1. Breadth-First Search (BFS) via MATCH ANY SHORTEST (src IS Person WHERE src.id = 1)
+WITH bfs AS (
+    SELECT vertex_id, min_depth
       FROM GRAPH_TABLE (social_graph(),
-          'MATCH (p IS Person)
-           COLUMNS (p.id AS vertex_id)'
+          'MATCH ANY SHORTEST (src IS Person WHERE src.id = 1)-[e IS knows]->{0,4}(dst IS Person)
+           COLUMNS (dst.id AS vertex_id, path_length(e) AS min_depth)'
       ) g
-     WHERE g.vertex_id = :root_id
-    UNION DISTINCT ON (vertex_id)
-    SELECT g.dst_id AS vertex_id,
-           b.min_depth + 1 AS min_depth,
-           b.vertex_id AS parent_id
-      FROM bfs b
-      JOIN GRAPH_TABLE (social_graph(),
-          'MATCH (src IS Person)-[IS knows]->(dst IS Person)
-           COLUMNS (src.id AS src_id, dst.id AS dst_id)'
-      ) g ON g.src_id = b.vertex_id
-     WHERE b.min_depth < 4
 )
 SELECT count(*) AS bfs_reachable,
        COALESCE(MIN(min_depth) FILTER (WHERE vertex_id = :root_id), -1) AS bfs_root_depth,
